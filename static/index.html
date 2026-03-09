@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HAPS Jobs Console Platform</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <main class="container">
+    <h1>HAPS Jobs Console Platform</h1>
+
+    <section class="panel panel-new">
+      <div class="header-row">
+        <h2>Create Jobs</h2>
+        <button id="addJobBtn" type="button">New</button>
+      </div>
+      <form id="newJobsForm">
+        <div id="newJobsList"></div>
+        <button id="submitBtn" type="submit">Submit</button>
+      </form>
+    </section>
+
+    <section class="panel panel-recent">
+      <h2>Recent Jobs</h2>
+      <div id="recentJobs"></div>
+    </section>
+  </main>
+
+  <template id="newJobTemplate">
+    <div class="job-card row-grid">
+      <label class="field"><span class="key">JobsID</span><input name="jobs_id" readonly /></label>
+      <label class="field"><span class="key">HAPS Platform</span>
+        <select name="haps_platform">
+          <option value="BJ-HAPS80">BJ-HAPS80</option>
+          <option value="CD-HAPS80">CD-HAPS80</option>
+          <option value="CD-HAPS100">CD-HAPS100</option>
+        </select>
+      </label>
+
+      <label class="field bitfile-field">
+        <span class="key">Bitfile</span>
+        <div class="inline-control">
+          <input name="bitfile" class="bitfile-path" placeholder="/path/to/xxx.bit" />
+          <button type="button" class="mini-btn latest-btn">Get Latest</button>
+        </div>
+      </label>
+
+      <label class="field binfile-field">
+        <span class="key">Binfile</span>
+        <div class="inline-control">
+          <input name="binfile" class="binfile-path" placeholder="/path/to/xxx.bin" />
+          <button type="button" class="mini-btn browse-btn" title="Browse">▾</button>
+        </div>
+      </label>
+
+      <label class="field"><span class="key">Log Path</span><input name="log_path" placeholder="/tmp/job.log" /></label>
+
+      <div class="field openocd-field">
+        <span class="key">OpenOCD Cfg</span>
+        <div class="stacked">
+          <input name="openocd_tool_path" placeholder="tool path: /opt/openocd/bin/openocd" />
+          <input name="openocd_cfg_file" placeholder="cfg file: /opt/openocd/board.cfg" />
+        </div>
+      </div>
+
+      <div class="field uart-field">
+        <button type="button" class="key key-btn add-uart-btn">UART +</button>
+        <div class="uart-list"></div>
+      </div>
+
+      <div class="row-actions">
+        <button class="minus-btn" type="button" title="Delete row">−</button>
+        <button class="plus-btn" type="button" title="Add next row">+</button>
+      </div>
+    </div>
+  </template>
+
+  <template id="uartTemplate">
+    <div class="uart-item">
+      <input class="uart-input" placeholder="/dev/ttyUSB0" />
+      <button type="button" class="remove-uart-btn">-</button>
+    </div>
+  </template>
+
+  <script src="/static/main.js"></script>
+</body>
+</html>

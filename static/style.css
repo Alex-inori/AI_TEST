@@ -1,0 +1,73 @@
+:root {
+  --bg: #f4f6fb;
+  --new-bg: #eef5ff;
+  --recent-bg: #fff4ec;
+  --new-border: #b8d2ff;
+  --recent-border: #ffd3b3;
+  --key-bg: #1f3a8a;
+  --key-bg-recent: #9a3412;
+}
+
+body { font-family: Arial, sans-serif; background: var(--bg); margin: 0; color: #222; }
+.container { max-width: 1850px; margin: 20px auto; background: #fff; padding: 20px; border-radius: 14px; }
+h1, h2 { margin: 0 0 12px; }
+.panel { border-radius: 12px; padding: 16px; margin-bottom: 24px; }
+.panel-new { background: var(--new-bg); border: 1px solid var(--new-border); }
+.panel-recent { background: var(--recent-bg); border: 1px solid var(--recent-border); }
+.header-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+
+.job-card, .recent-card { border: 1px solid #d8dde8; border-radius: 10px; padding: 12px; margin-bottom: 10px; background: #fff; }
+.row-grid { display: grid; grid-template-columns: repeat(7, minmax(160px, 1fr)) 64px; gap: 10px; align-items: stretch; }
+.recent-grid { display: grid; grid-template-columns: minmax(max-content, 2fr) 180px 180px minmax(320px, 2fr) auto; gap: 10px; align-items: stretch; }
+
+.field, .kv { display: flex; flex-direction: column; }
+.key {
+  display: block;
+  text-align: center;
+  font-weight: 800;
+  color: #fff;
+  background: var(--key-bg);
+  border-radius: 6px;
+  padding: 6px 8px;
+  margin-bottom: 6px;
+  font-size: 12px;
+}
+.panel-recent .key { background: var(--key-bg-recent); }
+.key-btn { border: none; cursor: pointer; width: 100%; }
+
+input, select, .val {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 38px;
+  padding: 8px;
+  border: 1px solid #c9cfdb;
+  border-radius: 6px;
+  background: #fff;
+}
+.val { background: #f9fafb; display: flex; align-items: center; }
+.jobsid-val { width: max-content; min-width: 220px; }
+.status-cell .val { justify-content: center; text-align: center; }
+
+.inline-control { display: grid; grid-template-columns: 1fr auto; gap: 6px; align-items: center; }
+.stacked { display: grid; grid-template-rows: 1fr 1fr; gap: 6px; }
+
+button { padding: 9px 12px; border: none; border-radius: 7px; cursor: pointer; background: #0a66ff; color: #fff; white-space: nowrap; }
+.mini-btn { padding: 8px 10px; }
+.mini-btn.active { background: #0b8f4d; }
+
+.row-actions { display: grid; grid-template-rows: 1fr 1fr; gap: 8px; align-items: center; }
+.minus-btn, .plus-btn { font-size: 24px; font-weight: 900; line-height: 1; padding: 0; height: 38px; }
+.minus-btn { color: #fff; background: #c1121f; }
+.plus-btn { color: #fff; background: #2b9348; }
+
+.copy-btn { background: #475467; }
+.finish-btn { background: #b54708; }
+
+.uart-list { display: grid; gap: 6px; }
+.uart-item { display: grid; grid-template-columns: 1fr auto; gap: 6px; }
+.remove-uart-btn { background: #7a271a; padding: 6px 8px; }
+
+.actions { display: flex; align-items: end; gap: 8px; }
+.status.Runing { color: #0a66ff; font-weight: 700; }
+.status.Finish { color: #15803d; font-weight: 700; }
+.status.Stopped, .status.Failed { color: #a11; font-weight: 700; }
