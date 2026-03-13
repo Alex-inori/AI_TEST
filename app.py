@@ -230,11 +230,14 @@ class JobManager:
                 current.message = f"job failed (exit={rc})"
                 self._promote_waiting_locked()
 
-    def stop(self, job_id: str) -> JobRecord:
+    def stop(self, job_id: str, user_id: str) -> JobRecord:
         with self._lock:
             job = self._jobs.get(job_id)
             if not job:
                 raise KeyError(job_id)
+            owner_id = str((job.payload or {}).get("user_id") or "")
+            if owner_id and owner_id != user_id:
+                raise PermissionError("can only finish own running job")
             if job.status != "Runing":
                 return job
             process = job.process
@@ -628,11 +631,13 @@ def submit_jobs(payload: SubmitJobsRequest, request: Request) -> dict[str, Any]:
 
 
 @app.post("/api/jobs/{job_id}/stop")
-def stop_job(job_id: str) -> dict[str, Any]:
+def stop_job(job_id: str, request: Request) -> dict[str, Any]:
     try:
-        job = manager.stop(job_id)
+        job = manager.stop(job_id, get_system_user_id(request))
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="job not found") from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     return manager._to_api(job)
 
 
