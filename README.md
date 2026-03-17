@@ -21,6 +21,7 @@
 11. Stop 后后端终止对应进程。
 12. Recent Jobs 记录提交时间与结束时间。
 13. Recent Jobs 支持 Copy 到 New Jobs。
+14. 如果 Job 提交时配置了 UART 设备，Recent Jobs 会显示 UART Console 按钮，可在 Google Chrome 中通过 Web Serial API 打开串口控制台查看串口打印。
 
 ## Python 版本要求
 

@@ -10,6 +10,134 @@ let currentUser = 'user';
 let currentUserId = '0';
 const promptedTimeoutConfirmJobs = new Set();
 let stopConfirmModal = null;
+let uartConsoleModal = null;
+
+function appendUartConsoleLog(text) {
+  const modal = uartConsoleModal;
+  if (!modal) return;
+  modal.consoleEl.value += text;
+  modal.consoleEl.scrollTop = modal.consoleEl.scrollHeight;
+}
+
+function ensureUartConsoleModal() {
+  if (uartConsoleModal) return uartConsoleModal;
+
+  const overlay = document.createElement('div');
+  overlay.className = 'uart-console-overlay';
+  overlay.innerHTML = `
+    <div class="uart-console-modal">
+      <div class="uart-console-head">
+        <strong>UART Serial Console (Chrome Web Serial)</strong>
+        <button type="button" class="uart-console-close">×</button>
+      </div>
+      <div class="uart-console-meta"></div>
+      <div class="uart-console-toolbar">
+        <label>BaudRate <input class="uart-console-baud" type="number" min="110" step="1" value="115200" /></label>
+        <button type="button" class="mini-btn uart-console-connect">Connect Serial</button>
+        <button type="button" class="mini-btn uart-console-disconnect" disabled>Disconnect</button>
+        <button type="button" class="mini-btn uart-console-clear">Clear</button>
+      </div>
+      <textarea class="uart-console-output" readonly placeholder="Serial output will appear here..."></textarea>
+      <div class="uart-console-note">提示：浏览器无法直接按 /dev/ttyUSBx 自动绑定设备，请在弹窗里手动选择与任务相同的串口设备。</div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  const close = async () => {
+    overlay.style.display = 'none';
+    const modal = ensureUartConsoleModal();
+    if (modal.reader) {
+      try { await modal.reader.cancel(); } catch (_) {}
+      try { modal.reader.releaseLock(); } catch (_) {}
+      modal.reader = null;
+    }
+    if (modal.port) {
+      try { await modal.port.close(); } catch (_) {}
+      modal.port = null;
+    }
+    modal.connectBtn.disabled = false;
+    modal.disconnectBtn.disabled = true;
+  };
+
+  uartConsoleModal = {
+    overlay,
+    metaEl: overlay.querySelector('.uart-console-meta'),
+    consoleEl: overlay.querySelector('.uart-console-output'),
+    baudInput: overlay.querySelector('.uart-console-baud'),
+    connectBtn: overlay.querySelector('.uart-console-connect'),
+    disconnectBtn: overlay.querySelector('.uart-console-disconnect'),
+    clearBtn: overlay.querySelector('.uart-console-clear'),
+    closeBtn: overlay.querySelector('.uart-console-close'),
+    reader: null,
+    port: null,
+    activeJobId: '',
+    close,
+  };
+
+  uartConsoleModal.closeBtn.addEventListener('click', () => { close(); });
+  overlay.addEventListener('click', (event) => {
+    if (event.target === overlay) close();
+  });
+  uartConsoleModal.clearBtn.addEventListener('click', () => {
+    uartConsoleModal.consoleEl.value = '';
+  });
+  uartConsoleModal.disconnectBtn.addEventListener('click', async () => {
+    await close();
+    overlay.style.display = 'block';
+  });
+  uartConsoleModal.connectBtn.addEventListener('click', async () => {
+    if (!('serial' in navigator)) {
+      alert('当前浏览器不支持 Web Serial API，请使用 Google Chrome。');
+      return;
+    }
+
+    const modal = ensureUartConsoleModal();
+    const baudRate = Number.parseInt(modal.baudInput.value, 10) || 115200;
+    try {
+      const port = await navigator.serial.requestPort();
+      await port.open({ baudRate });
+      modal.port = port;
+      modal.connectBtn.disabled = true;
+      modal.disconnectBtn.disabled = false;
+      appendUartConsoleLog(`\n[system] Serial connected at ${baudRate} baud.\n`);
+
+      const decoder = new TextDecoder();
+      modal.reader = port.readable.getReader();
+      while (modal.port === port) {
+        const { value, done } = await modal.reader.read();
+        if (done) break;
+        if (value) appendUartConsoleLog(decoder.decode(value, { stream: true }));
+      }
+    } catch (error) {
+      appendUartConsoleLog(`\n[error] ${error.message || String(error)}\n`);
+    } finally {
+      const current = ensureUartConsoleModal();
+      if (current.reader) {
+        try { current.reader.releaseLock(); } catch (_) {}
+        current.reader = null;
+      }
+      if (current.port) {
+        try { await current.port.close(); } catch (_) {}
+        current.port = null;
+      }
+      current.connectBtn.disabled = false;
+      current.disconnectBtn.disabled = true;
+      appendUartConsoleLog('[system] Serial disconnected.\n');
+    }
+  });
+
+  return uartConsoleModal;
+}
+
+function showUartConsole(job) {
+  const modal = ensureUartConsoleModal();
+  const payload = (job && job.payload) || {};
+  const uartPaths = normalizeUartPaths(payload);
+  modal.overlay.style.display = 'block';
+  modal.activeJobId = String(job.id || '');
+  modal.metaEl.textContent = `Job ${payload.jobs_id || '-'} UART: ${uartPaths.join(', ') || '(empty)'}`;
+  appendUartConsoleLog(`\n[system] Open console for job ${payload.jobs_id || '-'} (${new Date().toLocaleString()})\n`);
+}
 
 function findRecentJobCard(jobId) {
   const targetId = String(jobId);
@@ -599,6 +727,17 @@ function renderRecentJobs(jobs) {
     copyBtn.style.width = '100%';
     copyBtn.addEventListener('click', () => createNewJobCard(payload, null, { regenerateJobsId: true }));
     actions.appendChild(copyBtn);
+
+    const uartPaths = normalizeUartPaths(payload);
+    if (uartPaths.length) {
+      const uartConsoleBtn = document.createElement('button');
+      uartConsoleBtn.textContent = 'Open UART Console';
+      uartConsoleBtn.className = 'copy-btn';
+      uartConsoleBtn.type = 'button';
+      uartConsoleBtn.style.width = '100%';
+      uartConsoleBtn.addEventListener('click', () => showUartConsole(job));
+      actions.appendChild(uartConsoleBtn);
+    }
 
     if (job.status === 'Runing') {
       const isOwner = String(payload.user_id || '') === currentUserId;
