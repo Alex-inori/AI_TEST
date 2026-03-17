@@ -13,12 +13,6 @@ let stopConfirmModal = null;
 
 function openUartConsole(job) {
   if (!job || !job.id) return;
-  const payload = job.payload || {};
-  const uartPaths = Array.isArray(payload.uart_paths) ? payload.uart_paths.filter(Boolean) : [];
-  if (!uartPaths.length) {
-    alert('No UART path configured.');
-    return;
-  }
   const url = `/uart-console?job_id=${encodeURIComponent(job.id)}`;
   window.open(url, '_blank', 'noopener');
 }
@@ -632,15 +626,13 @@ function renderRecentJobs(jobs) {
         actions.appendChild(finishBtn);
       }
 
-      if (Array.isArray(payload.uart_paths) && payload.uart_paths.length) {
-        const uartBtn = document.createElement('button');
-        uartBtn.textContent = 'UART Console';
-        uartBtn.className = 'copy-btn';
-        uartBtn.type = 'button';
-        uartBtn.style.width = '100%';
-        uartBtn.addEventListener('click', () => openUartConsole(job));
-        actions.appendChild(uartBtn);
-      }
+      const uartBtn = document.createElement('button');
+      uartBtn.textContent = 'UART Console';
+      uartBtn.className = 'copy-btn';
+      uartBtn.type = 'button';
+      uartBtn.style.width = '100%';
+      uartBtn.addEventListener('click', () => openUartConsole(job));
+      actions.appendChild(uartBtn);
 
       const messageText = String(job.message || '');
       const needFiveMinuteConfirm = messageText.includes('less than 5 minutes left');
