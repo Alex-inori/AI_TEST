@@ -11,6 +11,112 @@ let currentUserId = '0';
 const promptedTimeoutConfirmJobs = new Set();
 let stopConfirmModal = null;
 
+let uartConsoleModal = null;
+
+function ensureUartConsoleModal() {
+  if (uartConsoleModal) return uartConsoleModal;
+
+  const overlay = document.createElement('div');
+  overlay.className = 'uart-console-overlay';
+  overlay.innerHTML = `
+    <div class="uart-console-modal">
+      <div class="uart-console-head">
+        <strong class="uart-console-title">UART Console</strong>
+        <button type="button" class="uart-console-close">×</button>
+      </div>
+      <div class="uart-console-tabs"></div>
+      <pre class="uart-console-output"></pre>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  overlay.style.display = 'none';
+
+  const modal = {
+    overlay,
+    title: overlay.querySelector('.uart-console-title'),
+    tabs: overlay.querySelector('.uart-console-tabs'),
+    output: overlay.querySelector('.uart-console-output'),
+    closeBtn: overlay.querySelector('.uart-console-close'),
+    pollTimer: null,
+    jobId: '',
+    selectedIndex: 0,
+    uartPaths: [],
+  };
+
+  const close = () => {
+    overlay.style.display = 'none';
+    modal.jobId = '';
+    modal.uartPaths = [];
+    modal.tabs.innerHTML = '';
+    modal.output.textContent = '';
+    if (modal.pollTimer) {
+      window.clearInterval(modal.pollTimer);
+      modal.pollTimer = null;
+    }
+  };
+
+  modal.close = close;
+  modal.closeBtn.addEventListener('click', close);
+  overlay.addEventListener('click', (event) => {
+    if (event.target === overlay) close();
+  });
+
+  uartConsoleModal = modal;
+  return modal;
+}
+
+async function refreshUartOutput() {
+  const modal = ensureUartConsoleModal();
+  if (!modal.jobId || modal.overlay.style.display === 'none') return;
+
+  const resp = await fetch(`/api/jobs/${modal.jobId}/uart/${modal.selectedIndex}?lines=300`);
+  if (!resp.ok) {
+    modal.output.textContent = `Load UART failed: ${await resp.text()}`;
+    return;
+  }
+  const data = await resp.json();
+  modal.output.textContent = data.text || '';
+  modal.output.scrollTop = modal.output.scrollHeight;
+}
+
+function renderUartTabs(modal) {
+  modal.tabs.innerHTML = '';
+  modal.uartPaths.forEach((path, index) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = `uart-tab-btn${index === modal.selectedIndex ? ' active' : ''}`;
+    btn.textContent = `${index + 1}: ${path}`;
+    btn.addEventListener('click', () => {
+      modal.selectedIndex = index;
+      renderUartTabs(modal);
+      refreshUartOutput();
+    });
+    modal.tabs.appendChild(btn);
+  });
+}
+
+function openUartConsole(job) {
+  const payload = job.payload || {};
+  const uartPaths = Array.isArray(payload.uart_paths) ? payload.uart_paths.filter(Boolean) : [];
+  if (!uartPaths.length) {
+    alert('No UART path configured.');
+    return;
+  }
+
+  const modal = ensureUartConsoleModal();
+  modal.jobId = String(job.id);
+  modal.selectedIndex = Math.min(modal.selectedIndex, uartPaths.length - 1);
+  if (modal.selectedIndex < 0) modal.selectedIndex = 0;
+  modal.uartPaths = uartPaths;
+  modal.title.textContent = `UART Console - ${payload.jobs_id || job.id}`;
+  modal.overlay.style.display = 'flex';
+  renderUartTabs(modal);
+  refreshUartOutput();
+
+  if (modal.pollTimer) window.clearInterval(modal.pollTimer);
+  modal.pollTimer = window.setInterval(refreshUartOutput, 1500);
+}
+
 function findRecentJobCard(jobId) {
   const targetId = String(jobId);
   const cards = recentJobs.querySelectorAll('.recent-card[data-job-id]');
@@ -618,6 +724,16 @@ function renderRecentJobs(jobs) {
         finishBtn.style.width = '100%';
         finishBtn.addEventListener('click', () => finishJob(job.id));
         actions.appendChild(finishBtn);
+      }
+
+      if (Array.isArray(payload.uart_paths) && payload.uart_paths.length) {
+        const uartBtn = document.createElement('button');
+        uartBtn.textContent = 'UART Console';
+        uartBtn.className = 'copy-btn';
+        uartBtn.type = 'button';
+        uartBtn.style.width = '100%';
+        uartBtn.addEventListener('click', () => openUartConsole(job));
+        actions.appendChild(uartBtn);
       }
 
       const messageText = String(job.message || '');

@@ -241,3 +241,61 @@ button { padding: 9px 12px; border: none; border-radius: 7px; cursor: pointer; b
 .stop-confirm-message { font-size: 14px; color: #111827; }
 .stop-confirm-countdown { font-size: 13px; color: #b45309; }
 .stop-confirm-actions { display: flex; justify-content: flex-end; gap: 10px; }
+
+.uart-console-overlay {
+  position: fixed;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.35);
+  z-index: 1300;
+}
+.uart-console-modal {
+  width: min(980px, 95vw);
+  height: min(680px, 88vh);
+  background: #0f172a;
+  color: #e2e8f0;
+  border-radius: 12px;
+  display: grid;
+  grid-template-rows: auto auto 1fr;
+  gap: 10px;
+  padding: 12px;
+}
+.uart-console-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.uart-console-close {
+  background: transparent;
+  color: #e2e8f0;
+  font-size: 24px;
+  line-height: 1;
+  padding: 0 8px;
+}
+.uart-console-tabs {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+}
+.uart-tab-btn {
+  background: #1e293b;
+  color: #cbd5e1;
+  border: 1px solid #334155;
+  padding: 6px 10px;
+}
+.uart-tab-btn.active {
+  background: #1d4ed8;
+  color: #fff;
+  border-color: #1d4ed8;
+}
+.uart-console-output {
+  margin: 0;
+  overflow: auto;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  padding: 10px;
+  background: #020617;
+  white-space: pre-wrap;
+}

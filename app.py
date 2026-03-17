@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import pwd
+import shlex
 import socket
 import subprocess
 import threading
@@ -60,6 +61,7 @@ class JobRecord:
     stop_confirm_time: str | None = None
     run_token: int = 0
     process: subprocess.Popen[str] | None = field(default=None, repr=False)
+    uart_processes: list[subprocess.Popen[str]] = field(default_factory=list, repr=False)
 
 
 @dataclass
@@ -73,6 +75,7 @@ class JobManager:
     MAX_RECENT_JOBS = 10
     STOP_CONFIRM_REMINDER_MINUTES = 5
     STOP_GRACE_MINUTES = 5
+    UART_LOG_DIR = APP_ROOT / "runtime_uart_logs"
 
     def __init__(self) -> None:
         self._jobs: dict[str, JobRecord] = {}
@@ -116,7 +119,51 @@ class JobManager:
             text=True,
         )
         job.process = process
+        self._start_uart_capture_locked(job)
         threading.Thread(target=self._watch_job, args=(job.id, job.run_token), daemon=True).start()
+
+    def _start_uart_capture_locked(self, job: JobRecord) -> None:
+        self._stop_uart_capture_locked(job)
+        payload = job.payload or {}
+        uart_paths = [str(path or "").strip() for path in payload.get("uart_paths") or []]
+        uart_paths = [path for path in uart_paths if path]
+        if not uart_paths:
+            payload["uart_streams"] = []
+            return
+
+        self.UART_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        streams: list[dict[str, Any]] = []
+        for index, path in enumerate(uart_paths):
+            log_path = self.UART_LOG_DIR / f"{job.id}_{index}.log"
+            try:
+                log_path.touch(exist_ok=True)
+            except OSError:
+                continue
+
+            cat_command = f"stdbuf -oL cat {shlex.quote(path)} >> {shlex.quote(str(log_path))}"
+            process = subprocess.Popen(
+                ["bash", "-lc", cat_command],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                text=True,
+            )
+            job.uart_processes.append(process)
+            streams.append({"index": index, "path": path, "log": str(log_path)})
+
+        payload["uart_streams"] = streams
+
+    @staticmethod
+    def _stop_uart_capture_locked(job: JobRecord) -> None:
+        for process in job.uart_processes:
+            if process.poll() is not None:
+                continue
+            process.terminate()
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=2)
+        job.uart_processes = []
 
 
     @staticmethod
@@ -232,6 +279,7 @@ class JobManager:
             if current.status != "Runing":
                 return
             current.end_time = datetime.now().isoformat(timespec="seconds")
+            self._stop_uart_capture_locked(current)
             if rc == 0:
                 current.status = "Finish"
                 current.message = "job finished"
@@ -260,6 +308,7 @@ class JobManager:
 
         with self._lock:
             job = self._jobs[job_id]
+            self._stop_uart_capture_locked(job)
             job.status = "Finish"
             job.end_time = datetime.now().isoformat(timespec="seconds")
             job.message = "job manually finished"
@@ -331,6 +380,7 @@ class JobManager:
         job.status = "Finish"
         job.end_time = datetime.now().isoformat(timespec="seconds")
         job.message = message
+        self._stop_uart_capture_locked(job)
 
     def _apply_timeouts_locked(self) -> None:
         now = datetime.now()
@@ -456,6 +506,35 @@ class JobManager:
             "stop_confirmed": job.stop_confirmed,
             "stop_confirm_time": job.stop_confirm_time,
             "payload": job.payload,
+        }
+
+    def read_uart_output(self, job_id: str, uart_index: int, lines: int = 200) -> dict[str, Any]:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job:
+                raise KeyError(job_id)
+            streams = (job.payload or {}).get("uart_streams") or []
+            target = next((item for item in streams if int(item.get("index", -1)) == uart_index), None)
+            if not target:
+                raise IndexError(uart_index)
+            log_path = Path(str(target.get("log") or ""))
+            uart_path = str(target.get("path") or "")
+
+        if not log_path.exists() or not log_path.is_file():
+            return {"job_id": job_id, "uart_index": uart_index, "path": uart_path, "text": ""}
+
+        try:
+            with log_path.open("r", encoding="utf-8", errors="replace") as handle:
+                content = handle.readlines()
+        except OSError:
+            content = []
+
+        safe_lines = max(10, min(2000, int(lines)))
+        return {
+            "job_id": job_id,
+            "uart_index": uart_index,
+            "path": uart_path,
+            "text": "".join(content[-safe_lines:]),
         }
 
 
@@ -763,3 +842,13 @@ def cancel_waiting_job(waiting_id: str, user_id: str) -> dict[str, bool]:
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     return {"ok": True}
+
+
+@app.get("/api/jobs/{job_id}/uart/{uart_index}")
+def get_uart_output(job_id: str, uart_index: int, lines: int = 200) -> dict[str, Any]:
+    try:
+        return manager.read_uart_output(job_id, uart_index, lines)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="job not found") from exc
+    except IndexError as exc:
+        raise HTTPException(status_code=404, detail="uart not found") from exc
