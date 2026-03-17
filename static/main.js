@@ -11,10 +11,9 @@ let currentUserId = '0';
 const promptedTimeoutConfirmJobs = new Set();
 let stopConfirmModal = null;
 
-function openUartConsole(job) {
-  if (!job || !job.id) return;
-  const url = `/uart-console?job_id=${encodeURIComponent(job.id)}`;
-  window.open(url, '_blank', 'noopener');
+function buildUartConsoleUrl(job) {
+  if (!job || !job.id) return '';
+  return `/uart-console?job_id=${encodeURIComponent(job.id)}`;
 }
 
 function findRecentJobCard(jobId) {
@@ -626,13 +625,13 @@ function renderRecentJobs(jobs) {
         actions.appendChild(finishBtn);
       }
 
-      const uartBtn = document.createElement('button');
-      uartBtn.textContent = 'UART Console';
-      uartBtn.className = 'copy-btn';
-      uartBtn.type = 'button';
-      uartBtn.style.width = '100%';
-      uartBtn.addEventListener('click', () => openUartConsole(job));
-      actions.appendChild(uartBtn);
+      const uartLink = document.createElement('a');
+      uartLink.textContent = 'UART Console';
+      uartLink.className = 'copy-btn uart-console-link';
+      uartLink.href = buildUartConsoleUrl(job);
+      uartLink.target = '_blank';
+      uartLink.rel = 'noopener noreferrer';
+      actions.appendChild(uartLink);
 
       const messageText = String(job.message || '');
       const needFiveMinuteConfirm = messageText.includes('less than 5 minutes left');
