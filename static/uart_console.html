@@ -3,16 +3,23 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>UART Console</title>
+  <title>UART Web Serial Console</title>
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
   <main class="container uart-page-container">
     <section class="panel uart-page-panel">
       <div class="uart-page-head">
-        <h2 id="uartPageTitle">UART Console</h2>
-        <div id="uartPageStatus" class="uart-page-status">Loading...</div>
+        <h2 id="uartPageTitle">UART Web Serial Console</h2>
+        <div id="uartPageStatus" class="uart-page-status">Ready</div>
       </div>
+
+      <div class="uart-toolbar">
+        <button id="connectCurrentBtn" type="button" class="copy-btn">Connect Current Port</button>
+        <button id="disconnectCurrentBtn" type="button" class="finish-btn">Disconnect Current</button>
+        <span class="uart-note">Web Serial 需要你在浏览器弹窗中手动选择串口设备。</span>
+      </div>
+
       <div id="uartPageTabs" class="uart-console-tabs"></div>
       <pre id="uartPageOutput" class="uart-console-output"></pre>
     </section>

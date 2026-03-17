@@ -13,7 +13,54 @@ let stopConfirmModal = null;
 
 function buildUartConsoleUrl(job) {
   if (!job || !job.id) return '';
-  return `/uart-console?job_id=${encodeURIComponent(job.id)}`;
+  const payload = job.payload || {};
+  const uartPaths = Array.isArray(payload.uart_paths) ? payload.uart_paths.filter(Boolean) : [];
+  const query = new URLSearchParams({
+    job_id: String(job.id),
+    jobs_id: String(payload.jobs_id || ''),
+    uart_paths: JSON.stringify(uartPaths),
+  });
+  return `/uart-console?${query.toString()}`;
+}
+
+function prepareUartConsoleWindows(submittedJobs) {
+  const windows = [];
+  submittedJobs.forEach((item) => {
+    const uartPaths = Array.isArray(item.uart_paths) ? item.uart_paths.filter(Boolean) : [];
+    if (!uartPaths.length) return;
+    const popup = window.open('about:blank', '_blank');
+    if (!popup) return;
+    popup.document.write('<title>UART Console</title><body style="font-family:Arial;padding:12px;">Preparing UART Console...</body>');
+    popup.document.close();
+    windows.push(popup);
+  });
+  return windows;
+}
+
+function launchUartConsolesFromResult(createdList, preparedWindows) {
+  const runningWithUart = (createdList || [])
+    .map((item) => item && item.job)
+    .filter((job) => {
+      const payload = (job && job.payload) || {};
+      const uartPaths = Array.isArray(payload.uart_paths) ? payload.uart_paths.filter(Boolean) : [];
+      return job && job.status === 'Runing' && uartPaths.length > 0;
+    });
+
+  runningWithUart.forEach((job, index) => {
+    const nextUrl = buildUartConsoleUrl(job);
+    const popup = preparedWindows[index];
+    if (popup && !popup.closed) {
+      popup.location.href = nextUrl;
+      return;
+    }
+    window.open(nextUrl, '_blank');
+  });
+
+  if (preparedWindows.length > runningWithUart.length) {
+    preparedWindows.slice(runningWithUart.length).forEach((popup) => {
+      if (popup && !popup.closed) popup.close();
+    });
+  }
 }
 
 function findRecentJobCard(jobId) {
@@ -482,12 +529,23 @@ function collectNewJobs() {
 
 async function submitJobs(event) {
   event.preventDefault();
+  const jobs = collectNewJobs();
+  const preparedWindows = prepareUartConsoleWindows(jobs);
   const response = await fetch('/api/jobs', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ jobs: collectNewJobs() }),
+    body: JSON.stringify({ jobs }),
   });
-  if (!response.ok) return alert(`Submit failed: ${await response.text()}`);
+  if (!response.ok) {
+    preparedWindows.forEach((popup) => {
+      if (popup && !popup.closed) popup.close();
+    });
+    return alert(`Submit failed: ${await response.text()}`);
+  }
+
+  const payload = await response.json();
+  launchUartConsolesFromResult(payload.created || [], preparedWindows);
+
   newJobsList.innerHTML = '';
   initJobsTimingSettings();
   createNewJobCard();
@@ -624,14 +682,6 @@ function renderRecentJobs(jobs) {
         finishBtn.addEventListener('click', () => finishJob(job.id));
         actions.appendChild(finishBtn);
       }
-
-      const uartLink = document.createElement('a');
-      uartLink.textContent = 'UART Console';
-      uartLink.className = 'copy-btn uart-console-link';
-      uartLink.href = buildUartConsoleUrl(job);
-      uartLink.target = '_blank';
-      uartLink.rel = 'noopener noreferrer';
-      actions.appendChild(uartLink);
 
       const messageText = String(job.message || '');
       const needFiveMinuteConfirm = messageText.includes('less than 5 minutes left');
