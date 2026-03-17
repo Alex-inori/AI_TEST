@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>UART Console</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <main class="container uart-page-container">
+    <section class="panel uart-page-panel">
+      <div class="uart-page-head">
+        <h2 id="uartPageTitle">UART Console</h2>
+        <div id="uartPageStatus" class="uart-page-status">Loading...</div>
+      </div>
+      <div id="uartPageTabs" class="uart-console-tabs"></div>
+      <pre id="uartPageOutput" class="uart-console-output"></pre>
+    </section>
+  </main>
+  <script src="/static/uart_console.js"></script>
+</body>
+</html>

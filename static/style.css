@@ -299,3 +299,24 @@ button { padding: 9px 12px; border: none; border-radius: 7px; cursor: pointer; b
   background: #020617;
   white-space: pre-wrap;
 }
+
+
+.uart-page-container {
+  max-width: 1200px;
+}
+.uart-page-panel {
+  background: #0f172a;
+  border: 1px solid #334155;
+  color: #e2e8f0;
+}
+.uart-page-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+  gap: 12px;
+}
+.uart-page-status {
+  font-size: 13px;
+  color: #cbd5e1;
+}

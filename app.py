@@ -508,6 +508,27 @@ class JobManager:
             "payload": job.payload,
         }
 
+    def get_uart_streams(self, job_id: str) -> dict[str, Any]:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job:
+                raise KeyError(job_id)
+            streams = (job.payload or {}).get("uart_streams") or []
+            normalized = []
+            for item in streams:
+                try:
+                    index = int(item.get("index", -1))
+                except (TypeError, ValueError):
+                    continue
+                if index < 0:
+                    continue
+                normalized.append({"index": index, "path": str(item.get("path") or "")})
+            return {
+                "job_id": job_id,
+                "status": job.status,
+                "streams": sorted(normalized, key=lambda item: item["index"]),
+            }
+
     def read_uart_output(self, job_id: str, uart_index: int, lines: int = 200) -> dict[str, Any]:
         with self._lock:
             job = self._jobs.get(job_id)
@@ -698,6 +719,9 @@ def index() -> FileResponse:
     return FileResponse(APP_ROOT / "static" / "index.html")
 
 
+@app.get("/uart-console")
+def uart_console_page() -> FileResponse:
+    return FileResponse(APP_ROOT / "static" / "uart_console.html")
 
 
 @app.get("/api/session")
@@ -842,6 +866,14 @@ def cancel_waiting_job(waiting_id: str, user_id: str) -> dict[str, bool]:
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     return {"ok": True}
+
+
+@app.get("/api/jobs/{job_id}/uart-streams")
+def get_uart_streams(job_id: str) -> dict[str, Any]:
+    try:
+        return manager.get_uart_streams(job_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="job not found") from exc
 
 
 @app.get("/api/jobs/{job_id}/uart/{uart_index}")
