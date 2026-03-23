@@ -494,8 +494,6 @@ function bindDbConfigToggles(card, prefill = {}) {
     if (typeof prefill[enabledFlagKey] === 'boolean') {
       toggle.checked = prefill[enabledFlagKey];
     }
-    const initialValue = prefill[key];
-    if (typeof prefill[enabledFlagKey] !== 'boolean' && initialValue === 'auto') toggle.checked = false;
     updateDbConfigState(card, key, toggle.checked);
     toggle.addEventListener('change', () => updateDbConfigState(card, key, toggle.checked));
   });
@@ -568,11 +566,11 @@ function collectNewJobs() {
     return {
       jobs_id: card.querySelector('input[name="jobs_id"]').value.trim(),
       haps_platform: card.querySelector('select[name="haps_platform"]').value,
-      database_path: dbPathEnabled ? (card.querySelector('input[name="database_path"]').value.trim() || 'auto') : 'auto',
+      database_path: dbPathEnabled ? card.querySelector('input[name="database_path"]').value.trim() : '',
       database_path_enabled: dbPathEnabled,
-      reset_script: resetScriptEnabled ? (card.querySelector('input[name="reset_script"]').value.trim() || 'auto') : 'auto',
+      reset_script: resetScriptEnabled ? card.querySelector('input[name="reset_script"]').value.trim() : '',
       reset_script_enabled: resetScriptEnabled,
-      imgload_script: imgLoadScriptEnabled ? (card.querySelector('input[name="imgload_script"]').value.trim() || 'auto') : 'auto',
+      imgload_script: imgLoadScriptEnabled ? card.querySelector('input[name="imgload_script"]').value.trim() : '',
       imgload_script_enabled: imgLoadScriptEnabled,
       binfile: card.querySelector('input[name="binfile"]').value.trim(),
       img_file: card.querySelector('input[name="img_file"]').value.trim(),

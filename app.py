@@ -44,12 +44,12 @@ class OpenOcdCfgInput(BaseModel):
 class JobInput(BaseModel):
     jobs_id: str = ""
     haps_platform: str = "BJ-HAPS80"
-    database_path: str = "auto"
-    database_path_enabled: bool = True
-    reset_script: str = "auto"
-    reset_script_enabled: bool = True
-    imgload_script: str = "auto"
-    imgload_script_enabled: bool = True
+    database_path: str = ""
+    database_path_enabled: bool = False
+    reset_script: str = ""
+    reset_script_enabled: bool = False
+    imgload_script: str = ""
+    imgload_script_enabled: bool = False
     binfile: str = ""
     img_file: str = ""
     log_path: str = ""
@@ -350,8 +350,8 @@ class JobManager:
 
     @staticmethod
     def _should_run_prepare(payload: dict[str, Any]) -> bool:
-        db_enabled = bool(payload.get("database_path_enabled", True))
-        reset_enabled = bool(payload.get("reset_script_enabled", True))
+        db_enabled = bool(payload.get("database_path_enabled", False))
+        reset_enabled = bool(payload.get("reset_script_enabled", False))
         database_path = str(payload.get("database_path") or "").strip()
         reset_script = str(payload.get("reset_script") or "").strip()
         return bool(db_enabled and reset_enabled and database_path and reset_script)
