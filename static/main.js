@@ -259,6 +259,26 @@ function resolveStopDeadline(job) {
   if (messageText.includes('Unconfirmed Stop in 5 minutes')) return timeoutAt + 5 * 60 * 1000;
   return timeoutAt;
 }
+function getRemainingSecondsToTimeout(job) {
+  if (!job) return null;
+  const payload = job.payload || {};
+  const durationMinutes = Number(payload.duration_minutes || 0);
+  const submitAt = Date.parse(job.submit_time || '');
+  if (!Number.isFinite(durationMinutes) || durationMinutes <= 0 || Number.isNaN(submitAt)) {
+    return null;
+  }
+  const timeoutAt = submitAt + durationMinutes * 60 * 1000;
+  return Math.floor((timeoutAt - Date.now()) / 1000);
+}
+function needsStopConfirmReminder(job) {
+  if (!job || !isRunningStatus(job.status)) return false;
+  if (job.stop_confirmed) return false;
+  const payload = job.payload || {};
+  if (Boolean(payload.auto_finish)) return false;
+  const remainingSeconds = getRemainingSecondsToTimeout(job);
+  if (remainingSeconds == null) return false;
+  return remainingSeconds > 0 && remainingSeconds <= 5 * 60;
+}
 function showStopConfirmModal(job) {
   const modal = ensureStopConfirmModal();
   const jobId = job && job.id;
@@ -711,9 +731,7 @@ function renderRecentJobs(jobs) {
         finishBtn.addEventListener('click', () => finishJob(job.id));
         actions.appendChild(finishBtn);
       }
-      const messageText = String(job.message || '');
-      const needFiveMinuteConfirm = messageText.includes('less than 5 minutes left');
-      if (isOwner && !job.stop_confirmed && needFiveMinuteConfirm && !promptedTimeoutConfirmJobs.has(job.id)) {
+      if (isOwner && needsStopConfirmReminder(job) && !promptedTimeoutConfirmJobs.has(job.id)) {
         promptedTimeoutConfirmJobs.add(job.id);
         window.setTimeout(async () => {
           showStopConfirmModal(job);
@@ -761,8 +779,7 @@ async function refreshRecentJobs() {
   const currentModalJobId = modal.overlay.dataset.jobId;
   if (modal.overlay.style.display !== 'none' && currentModalJobId) {
     const targetJob = jobs.find((job) => String(job.id) === currentModalJobId);
-    const targetMessage = String((targetJob && targetJob.message) || '');
-    const stillNeedsConfirm = Boolean(targetJob && isRunningStatus(targetJob.status) && !targetJob.stop_confirmed && targetMessage.includes('less than 5 minutes left'));
+    const stillNeedsConfirm = Boolean(targetJob && needsStopConfirmReminder(targetJob));
     if (!stillNeedsConfirm) closeStopConfirmModal();
   }
   renderRecentJobs(jobs);
