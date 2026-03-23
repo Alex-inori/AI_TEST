@@ -425,6 +425,8 @@ class JobManager:
                 if self._should_run_imgload(payload):
                     imgload_script = str(payload.get("imgload_script") or "").strip()
                     img_file = str(payload.get("img_file") or "").strip()
+                    if not self._wait_prepare_delay(job_id, run_token, 5):
+                        return
                     with self._lock:
                         if not self._job_is_current_locked(job_id, run_token):
                             return
@@ -441,14 +443,14 @@ class JobManager:
                         return
                     ran_imgload = True
 
-                prepare_delay = 5 if ran_imgload else 20
-                if not self._wait_prepare_delay(job_id, run_token, prepare_delay):
-                    return
-
                 with self._lock:
                     if not self._job_is_current_locked(job_id, run_token):
                         return
                     self._jobs[job_id].status = "Running::Resetting HAPS_ENV"
+
+                prepare_delay = 5 if ran_imgload else 20
+                if not self._wait_prepare_delay(job_id, run_token, prepare_delay):
+                    return
 
                 rc2 = subprocess.run([*cfgshell_cmd, reset_script], stdout=log_file, stderr=log_file, text=True).returncode
                 if rc2 != 0:
