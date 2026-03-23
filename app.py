@@ -823,6 +823,57 @@ def build_jobs_id(jobs_id: str, user_id: str = "") -> str:
     return f"{user}_{ts}"
 
 
+def _validate_tcl_file(path_text: str, *, field_name: str) -> Path:
+    value = (path_text or "").strip()
+    if not value:
+        raise ValueError(f"{field_name} is enabled but empty")
+    path = Path(value).expanduser()
+    if not path.exists():
+        raise ValueError(f"{field_name} not found: {path}")
+    if not path.is_file():
+        raise ValueError(f"{field_name} must be a file: {path}")
+    if path.suffix.lower() != ".tcl":
+        raise ValueError(f"{field_name} must be a .tcl script: {path}")
+    return path
+
+
+def validate_submit_payload(payload: dict[str, Any], used_uart_paths: set[str] | None = None) -> None:
+    db_enabled = bool(payload.get("database_path_enabled", False))
+    db_path_text = str(payload.get("database_path") or "").strip()
+    if db_enabled:
+        if not db_path_text:
+            raise ValueError("database_path is enabled but empty")
+        database_path = Path(db_path_text).expanduser()
+        if not database_path.exists():
+            raise ValueError(f"database_path not found: {database_path}")
+
+    reset_enabled = bool(payload.get("reset_script_enabled", False))
+    imgload_enabled = bool(payload.get("imgload_script_enabled", False))
+    if reset_enabled:
+        _validate_tcl_file(str(payload.get("reset_script") or ""), field_name="reset_script")
+    if imgload_enabled:
+        _validate_tcl_file(str(payload.get("imgload_script") or ""), field_name="imgload_script")
+
+    seen_in_job: set[str] = set()
+    normalized: list[str] = []
+    for raw in list(payload.get("uart_paths") or []):
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        if text in seen_in_job:
+            raise ValueError(f"duplicate UART path in same job: {text}")
+        seen_in_job.add(text)
+        normalized.append(text)
+
+    if used_uart_paths is not None:
+        duplicated_across_jobs = sorted(path for path in normalized if path in used_uart_paths)
+        if duplicated_across_jobs:
+            raise ValueError(f"duplicate UART path across submitted jobs: {duplicated_across_jobs[0]}")
+        used_uart_paths.update(normalized)
+
+    payload["uart_paths"] = normalized
+
+
 def _uid_to_username(uid: int | None) -> str | None:
     if uid is None:
         return None
@@ -1057,8 +1108,10 @@ def submit_jobs(payload: SubmitJobsRequest, request: Request) -> dict[str, Any]:
 
     created: list[dict[str, Any]] = []
     system_user = get_system_user_id(request)
+    used_uart_paths: set[str] = set()
     for item in payload.jobs:
         data = json.loads(item.model_dump_json())
+        validate_submit_payload(data, used_uart_paths=used_uart_paths)
         data["user_id"] = system_user
         data["jobs_id"] = build_jobs_id(data.get("jobs_id", ""), data["user_id"])
         data["log_info"] = build_log_info(data.get("log_path", ""))

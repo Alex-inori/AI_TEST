@@ -523,9 +523,9 @@ function createNewJobCard(prefill = {}, insertAfterNode = null, options = {}) {
   const normalizedUartPaths = normalizeUartPaths(prefill);
   node.querySelector('input[name="jobs_id"]').value = options.regenerateJobsId ? makeJobsId() : (prefill.jobs_id || makeJobsId());
   node.querySelector('select[name="haps_platform"]').value = prefill.haps_platform || 'BJ-HAPS80';
-  node.querySelector('input[name="database_path"]').value = prefill.database_path && prefill.database_path !== 'auto' ? prefill.database_path : '';
-  node.querySelector('input[name="reset_script"]').value = prefill.reset_script && prefill.reset_script !== 'auto' ? prefill.reset_script : '';
-  node.querySelector('input[name="imgload_script"]').value = prefill.imgload_script && prefill.imgload_script !== 'auto' ? prefill.imgload_script : '';
+  node.querySelector('input[name="database_path"]').value = prefill.database_path || '';
+  node.querySelector('input[name="reset_script"]').value = prefill.reset_script || '';
+  node.querySelector('input[name="imgload_script"]').value = prefill.imgload_script || '';
   node.querySelector('input[name="binfile"]').value = prefill.binfile || '';
   node.querySelector('input[name="img_file"]').value = prefill.img_file || '';
   node.querySelector('input[name="log_path"]').value = prefill.log_path || '';
@@ -586,12 +586,52 @@ function collectNewJobs() {
     };
   });
 }
+function validateJobsBeforeSubmit(jobs) {
+  const duplicateUarts = new Set();
+  const usedUarts = new Set();
+  const tclRegex = /\.tcl$/i;
+
+  jobs.forEach((job) => {
+    if (job.database_path_enabled && !job.database_path) {
+      throw new Error(`Job ${job.jobs_id || '-'}: DataBase Path is enabled but empty.`);
+    }
+    if (job.reset_script_enabled) {
+      if (!job.reset_script) throw new Error(`Job ${job.jobs_id || '-'}: Reset Script Path is enabled but empty.`);
+      if (!tclRegex.test(job.reset_script)) throw new Error(`Job ${job.jobs_id || '-'}: Reset Script must be a .tcl file.`);
+    }
+    if (job.imgload_script_enabled) {
+      if (!job.imgload_script) throw new Error(`Job ${job.jobs_id || '-'}: ImgLoad Script Path is enabled but empty.`);
+      if (!tclRegex.test(job.imgload_script)) throw new Error(`Job ${job.jobs_id || '-'}: ImgLoad Script must be a .tcl file.`);
+    }
+
+    const localSet = new Set();
+    (job.uart_paths || []).forEach((uart) => {
+      const path = String(uart || '').trim();
+      if (!path) return;
+      if (localSet.has(path)) duplicateUarts.add(path);
+      localSet.add(path);
+      if (usedUarts.has(path)) duplicateUarts.add(path);
+      usedUarts.add(path);
+    });
+  });
+
+  if (duplicateUarts.size) {
+    throw new Error(`Duplicate UART path detected: ${Array.from(duplicateUarts).join(', ')}`);
+  }
+}
 async function submitJobs(event) {
   event.preventDefault();
+  const jobs = collectNewJobs();
+  try {
+    validateJobsBeforeSubmit(jobs);
+  } catch (err) {
+    alert(err instanceof Error ? err.message : String(err));
+    return;
+  }
   const response = await fetch('/api/jobs', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ jobs: collectNewJobs() }),
+    body: JSON.stringify({ jobs }),
   });
   if (!response.ok) return alert(`Submit failed: ${await response.text()}`);
   newJobsList.innerHTML = '';
