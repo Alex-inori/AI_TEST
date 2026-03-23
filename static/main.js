@@ -17,6 +17,11 @@ let uartSocket = null;
 let uartPingTimer = null;
 let uartReconnectTimer = null;
 
+function isEditingUartInput() {
+  const active = document.activeElement;
+  return !!(active && active.classList && active.classList.contains('uart-column-input'));
+}
+
 function isRunningStatus(status) {
   const text = String(status || '');
   return text.startsWith('Runing') || text.startsWith('Running');
@@ -866,6 +871,7 @@ async function refreshRecentJobs() {
     const stillNeedsConfirm = Boolean(targetJob && needsStopConfirmReminder(targetJob));
     if (!stillNeedsConfirm) closeStopConfirmModal();
   }
+  if (isEditingUartInput()) return;
   renderRecentJobs(jobs);
 }
 async function bootstrap() {
