@@ -24,7 +24,7 @@ function isRunningStatus(status) {
 
 function statusClassName(status) {
   const text = String(status || '');
-  if (text === 'Running::Loading HAPS_DB' || text === 'Running::Resetting HAPS_ENV') return 'running-light';
+  if (text === 'Running::Loading HAPS_DB' || text === 'Running::Loading SW_IMG' || text === 'Running::Resetting HAPS_ENV') return 'running-light';
   if (text === 'Running::HAPS_RDY') return 'running-deep';
   if (isRunningStatus(text)) return 'running-deep';
   if (text === 'Finish') return 'Finish';
@@ -590,6 +590,7 @@ function validateJobsBeforeSubmit(jobs) {
   const duplicateUarts = new Set();
   const usedUarts = new Set();
   const tclRegex = /\.tcl$/i;
+  const imgRegex = /\.(img|bin)$/i;
 
   jobs.forEach((job) => {
     if (job.database_path_enabled && !job.database_path) {
@@ -602,6 +603,10 @@ function validateJobsBeforeSubmit(jobs) {
     if (job.imgload_script_enabled) {
       if (!job.imgload_script) throw new Error(`Job ${job.jobs_id || '-'}: ImgLoad Script Path is enabled but empty.`);
       if (!tclRegex.test(job.imgload_script)) throw new Error(`Job ${job.jobs_id || '-'}: ImgLoad Script must be a .tcl file.`);
+      if (!job.database_path_enabled) throw new Error(`Job ${job.jobs_id || '-'}: ImgLoad Script Path requires DataBase Path enabled.`);
+      if (!job.reset_script_enabled) throw new Error(`Job ${job.jobs_id || '-'}: ImgLoad Script Path requires Reset Script Path enabled.`);
+      if (!job.img_file) throw new Error(`Job ${job.jobs_id || '-'}: ImgLoad Script Path is enabled but IMG File path is empty.`);
+      if (!imgRegex.test(job.img_file)) throw new Error(`Job ${job.jobs_id || '-'}: IMG File path must be a .img or .bin file.`);
     }
 
     const localSet = new Set();
