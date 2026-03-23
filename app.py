@@ -366,6 +366,13 @@ class JobManager:
         reset_script = str(payload.get("reset_script") or "").strip()
         return bool(db_enabled and reset_enabled and database_path and reset_script)
 
+    @staticmethod
+    def _should_run_imgload(payload: dict[str, Any]) -> bool:
+        imgload_enabled = bool(payload.get("imgload_script_enabled", False))
+        imgload_script = str(payload.get("imgload_script") or "").strip()
+        img_file = str(payload.get("img_file") or "").strip()
+        return bool(imgload_enabled and imgload_script and img_file)
+
     def _job_is_current_locked(self, job_id: str, run_token: int) -> bool:
         job = self._jobs.get(job_id)
         return bool(job and job.run_token == run_token and self._is_running_status(job.status))
@@ -398,6 +405,7 @@ class JobManager:
                 cfgshell_cmd, db_load_script = self._read_cfgshell_config()
                 database_path = str(payload.get("database_path") or "").strip()
                 reset_script = str(payload.get("reset_script") or "").strip()
+                ran_imgload = False
 
                 with self._lock:
                     if not self._job_is_current_locked(job_id, run_token):
@@ -414,13 +422,35 @@ class JobManager:
                             self._promote_waiting_locked()
                     return
 
-                if not self._wait_prepare_delay(job_id, run_token, 20):
-                    return
+                if self._should_run_imgload(payload):
+                    imgload_script = str(payload.get("imgload_script") or "").strip()
+                    img_file = str(payload.get("img_file") or "").strip()
+                    if not self._wait_prepare_delay(job_id, run_token, 5):
+                        return
+                    with self._lock:
+                        if not self._job_is_current_locked(job_id, run_token):
+                            return
+                        self._jobs[job_id].status = "Running::Loading SW_IMG"
+
+                    rc_img = subprocess.run([*cfgshell_cmd, imgload_script, img_file], stdout=log_file, stderr=log_file, text=True).returncode
+                    if rc_img != 0:
+                        with self._lock:
+                            if self._job_is_current_locked(job_id, run_token):
+                                self._jobs[job_id].status = "Failed"
+                                self._jobs[job_id].end_time = datetime.now().isoformat(timespec="seconds")
+                                self._jobs[job_id].message = f"SW_IMG load failed (exit={rc_img})"
+                                self._promote_waiting_locked()
+                        return
+                    ran_imgload = True
 
                 with self._lock:
                     if not self._job_is_current_locked(job_id, run_token):
                         return
                     self._jobs[job_id].status = "Running::Resetting HAPS_ENV"
+
+                prepare_delay = 5 if ran_imgload else 20
+                if not self._wait_prepare_delay(job_id, run_token, prepare_delay):
+                    return
 
                 rc2 = subprocess.run([*cfgshell_cmd, reset_script], stdout=log_file, stderr=log_file, text=True).returncode
                 if rc2 != 0:
@@ -861,6 +891,20 @@ def _validate_tcl_file(path_text: str, *, field_name: str) -> Path:
     return path
 
 
+def _validate_img_file(path_text: str, *, field_name: str) -> Path:
+    value = (path_text or "").strip()
+    if not value:
+        raise ValueError(f"{field_name} is required when imgload_script_enabled=true")
+    path = Path(value).expanduser()
+    if not path.exists():
+        raise ValueError(f"{field_name} not found: {path}")
+    if not path.is_file():
+        raise ValueError(f"{field_name} must be a file: {path}")
+    if path.suffix.lower() not in {".img", ".bin"}:
+        raise ValueError(f"{field_name} must be a .img or .bin file: {path}")
+    return path
+
+
 def validate_submit_payload(payload: dict[str, Any], used_uart_paths: set[str] | None = None) -> None:
     db_enabled = bool(payload.get("database_path_enabled", False))
     db_path_text = str(payload.get("database_path") or "").strip()
@@ -876,7 +920,12 @@ def validate_submit_payload(payload: dict[str, Any], used_uart_paths: set[str] |
     if reset_enabled:
         _validate_tcl_file(str(payload.get("reset_script") or ""), field_name="reset_script")
     if imgload_enabled:
+        if not db_enabled:
+            raise ValueError("imgload_script_enabled requires database_path_enabled=true")
+        if not reset_enabled:
+            raise ValueError("imgload_script_enabled requires reset_script_enabled=true")
         _validate_tcl_file(str(payload.get("imgload_script") or ""), field_name="imgload_script")
+        _validate_img_file(str(payload.get("img_file") or ""), field_name="img_file")
 
     seen_in_job: set[str] = set()
     normalized: list[str] = []
