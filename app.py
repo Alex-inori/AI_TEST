@@ -158,6 +158,16 @@ class UartStreamManager:
         for _, thread in workers:
             thread.join(timeout=2.0)
 
+    def stop_all_capture(self) -> None:
+        with self._lock:
+            workers = list(self._threads.values())
+            self._threads.clear()
+
+        for stop_event, _ in workers:
+            stop_event.set()
+        for _, thread in workers:
+            thread.join(timeout=2.0)
+
     def _append_and_broadcast(self, message: dict[str, str]) -> None:
         device = message.get("device", "unknown")
         job_id = message.get("job_id", "")
@@ -622,13 +632,26 @@ class JobManager:
                 raise PermissionError("can only resubmit own running job")
             if not self._is_running_status(job.status):
                 raise ValueError("job is not running")
+            if job.status != "Running::HAPS_RDY":
+                raise ValueError("stop and resubmit is only allowed in Running::HAPS_RDY")
+            duration_minutes = self._duration_minutes(job.payload or {})
+            if duration_minutes > 0:
+                try:
+                    submit_at = datetime.fromisoformat(job.submit_time)
+                except ValueError:
+                    submit_at = datetime.now()
+                elapsed_seconds = (datetime.now() - submit_at).total_seconds()
+                remaining_seconds = duration_minutes * 60 - elapsed_seconds
+                if remaining_seconds <= self.STOP_CONFIRM_REMINDER_MINUTES * 60:
+                    raise ValueError("remaining execution time is less than 5 minutes, stop and resubmit is not allowed")
             process = job.process
-            self._uart_stream.stop_capture(job_id)
+            self._uart_stream.stop_all_capture()
             # Immediately invalidate old watcher callbacks to guarantee resubmit priority
             # over waiting queue promotion while old process exits.
             job.run_token += 1
             job.process = None
-            job.message = "job resubmitting"
+            job.status = "Running::Loading HAPS"
+            job.message = "job resubmitting from Running::Loading HAPS"
 
         if process and process.poll() is None:
             process.terminate()
@@ -645,7 +668,8 @@ class JobManager:
             if not self._is_running_status(current.status):
                 raise ValueError("job is not running")
             current.end_time = None
-            current.message = "job stopped and resubmitted with original timer"
+            current.status = "Running::Loading HAPS"
+            current.message = "job stopped and resubmitted from Running::Loading HAPS"
             current.stop_confirmed = False
             current.stop_confirm_time = None
             self._launch_job_process_locked(current)
