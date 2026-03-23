@@ -1111,11 +1111,11 @@ def submit_jobs(payload: SubmitJobsRequest, request: Request) -> dict[str, Any]:
     used_uart_paths: set[str] = set()
     for item in payload.jobs:
         data = json.loads(item.model_dump_json())
-        validate_submit_payload(data, used_uart_paths=used_uart_paths)
-        data["user_id"] = system_user
-        data["jobs_id"] = build_jobs_id(data.get("jobs_id", ""), data["user_id"])
-        data["log_info"] = build_log_info(data.get("log_path", ""))
         try:
+            validate_submit_payload(data, used_uart_paths=used_uart_paths)
+            data["user_id"] = system_user
+            data["jobs_id"] = build_jobs_id(data.get("jobs_id", ""), data["user_id"])
+            data["log_info"] = build_log_info(data.get("log_path", ""))
             result = manager.submit(data)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
