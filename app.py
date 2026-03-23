@@ -97,6 +97,8 @@ class UartStreamManager:
         )
         self._threads: dict[tuple[str, str], tuple[threading.Event, threading.Thread]] = {}
         self._last_line_seen: dict[tuple[str, str], tuple[str, float]] = {}
+        self._writers: dict[tuple[str, str], Any] = {}
+        self._writer_locks: dict[tuple[str, str], threading.Lock] = {}
         self._lock = threading.Lock()
 
     def attach_loop(self, loop: asyncio.AbstractEventLoop) -> None:
@@ -152,6 +154,9 @@ class UartStreamManager:
         with self._lock:
             targets = [key for key in self._threads if key[0] == job_id]
             workers = [self._threads.pop(key) for key in targets]
+            for key in targets:
+                self._writers.pop(key, None)
+                self._writer_locks.pop(key, None)
 
         for stop_event, _ in workers:
             stop_event.set()
@@ -162,6 +167,8 @@ class UartStreamManager:
         with self._lock:
             workers = list(self._threads.values())
             self._threads.clear()
+            self._writers.clear()
+            self._writer_locks.clear()
 
         for stop_event, _ in workers:
             stop_event.set()
@@ -174,6 +181,33 @@ class UartStreamManager:
         with self._lock:
             self._buffers[job_id][device].append(message)
         self._broadcast(message)
+
+    def write_input(self, job_id: str, device: str, content: str, append_newline: bool = False) -> tuple[bool, str]:
+        key = (str(job_id), str(device))
+        with self._lock:
+            writer = self._writers.get(key)
+            writer_lock = self._writer_locks.get(key)
+        if writer is None or writer_lock is None:
+            return False, f"[{job_id}] {device} is not available for input"
+        payload = content
+        if append_newline and not payload.endswith("\n"):
+            payload = f"{payload}\n"
+        data = payload.encode("utf-8", errors="replace")
+        try:
+            with writer_lock:
+                writer.write(data)
+                writer.flush()
+            preview = payload.replace("\r", "\\r").replace("\n", "\\n")
+            self._append_and_broadcast({
+                "type": "status",
+                "job_id": str(job_id),
+                "device": str(device),
+                "line": f"[{job_id}] TX> {preview}",
+                "ts": datetime.now().isoformat(timespec="seconds"),
+            })
+            return True, "ok"
+        except Exception as exc:
+            return False, f"[{job_id}] write failed on {device}: {exc}"
 
     def _read_serial_worker(self, job_id: str, device: str, stop_event: threading.Event) -> None:
         if serial is None:
@@ -239,6 +273,9 @@ class UartStreamManager:
                     "line": f"[{job_id}] {device} locked exclusively",
                     "ts": datetime.now().isoformat(timespec="seconds"),
                 })
+                with self._lock:
+                    self._writers[(job_id, device)] = uart
+                    self._writer_locks[(job_id, device)] = threading.Lock()
                 while not stop_event.is_set():
                     raw = uart.readline()
                     if not raw:
@@ -275,6 +312,8 @@ class UartStreamManager:
             with self._lock:
                 self._threads.pop((job_id, device), None)
                 self._last_line_seen.pop((job_id, device), None)
+                self._writers.pop((job_id, device), None)
+                self._writer_locks.pop((job_id, device), None)
             self._append_and_broadcast({
                 "type": "status",
                 "job_id": job_id,
@@ -1093,7 +1132,37 @@ async def ws_uart(websocket: WebSocket) -> None:
     await websocket.send_json({"type": "snapshot", "jobs": uart_stream_manager.snapshot()})
     try:
         while True:
-            await websocket.receive_text()
+            raw_text = await websocket.receive_text()
+            if raw_text == "ping":
+                continue
+            try:
+                message = json.loads(raw_text)
+            except json.JSONDecodeError:
+                continue
+            if message.get("type") != "uart_input":
+                continue
+            job_id = str(message.get("job_id") or "")
+            device = str(message.get("device") or "")
+            content = str(message.get("content") or "")
+            append_newline = bool(message.get("append_newline", False))
+            if not job_id or not device:
+                await websocket.send_json({
+                    "type": "status",
+                    "job_id": job_id,
+                    "device": device or "unknown",
+                    "line": "UART input ignored: missing job_id/device",
+                    "ts": datetime.now().isoformat(timespec="seconds"),
+                })
+                continue
+            ok, detail = uart_stream_manager.write_input(job_id, device, content, append_newline=append_newline)
+            if not ok:
+                await websocket.send_json({
+                    "type": "status",
+                    "job_id": job_id,
+                    "device": device,
+                    "line": detail,
+                    "ts": datetime.now().isoformat(timespec="seconds"),
+                })
     except WebSocketDisconnect:
         pass
     finally:

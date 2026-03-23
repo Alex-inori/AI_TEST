@@ -113,6 +113,17 @@ function connectUartSocket() {
     }, 1500);
   };
 }
+function sendUartInput(jobId, device, content, appendNewline = true) {
+  if (!uartSocket || uartSocket.readyState !== WebSocket.OPEN) return false;
+  uartSocket.send(JSON.stringify({
+    type: 'uart_input',
+    job_id: String(jobId || ''),
+    device: String(device || ''),
+    content: String(content || ''),
+    append_newline: !!appendNewline,
+  }));
+  return true;
+}
 function renderUartPanel(panel, jobId, uartPaths) {
   const devicesMap = uartBuffers.get(String(jobId)) || new Map();
   const sourceDevices = [...new Set([...(uartPaths || []), ...Array.from(devicesMap.keys())].map((v) => String(v || '').trim()).filter(Boolean))];
@@ -139,8 +150,38 @@ function renderUartPanel(panel, jobId, uartPaths) {
     const lines = devicesMap.get(device) || [];
     pre.textContent = lines.length ? lines.join('\n') : `Waiting output from ${device} ...`;
     pre.scrollTop = pre.scrollHeight;
+    const inputRow = document.createElement('div');
+    inputRow.className = 'uart-column-input-row';
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'uart-column-input';
+    input.placeholder = 'Input and press Enter / Send';
+    const sendBtn = document.createElement('button');
+    sendBtn.type = 'button';
+    sendBtn.className = 'uart-column-send-btn';
+    sendBtn.textContent = 'Send';
+    const submitInput = () => {
+      const value = input.value;
+      if (!value) return;
+      const sent = sendUartInput(jobId, device, value, true);
+      if (!sent) {
+        appendUartLine(String(jobId), device, '[UI] UART socket not connected; input not sent', new Date().toISOString().slice(0, 19));
+        patchUartPanelLine(panel, String(jobId), device);
+        return;
+      }
+      input.value = '';
+    };
+    sendBtn.addEventListener('click', submitInput);
+    input.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter') return;
+      event.preventDefault();
+      submitInput();
+    });
+    inputRow.appendChild(input);
+    inputRow.appendChild(sendBtn);
     column.appendChild(title);
     column.appendChild(pre);
+    column.appendChild(inputRow);
     grid.appendChild(column);
   });
   panel.appendChild(grid);
