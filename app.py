@@ -405,6 +405,7 @@ class JobManager:
                 cfgshell_cmd, db_load_script = self._read_cfgshell_config()
                 database_path = str(payload.get("database_path") or "").strip()
                 reset_script = str(payload.get("reset_script") or "").strip()
+                ran_imgload = False
 
                 with self._lock:
                     if not self._job_is_current_locked(job_id, run_token):
@@ -438,8 +439,10 @@ class JobManager:
                                 self._jobs[job_id].message = f"SW_IMG load failed (exit={rc_img})"
                                 self._promote_waiting_locked()
                         return
+                    ran_imgload = True
 
-                if not self._wait_prepare_delay(job_id, run_token, 20):
+                prepare_delay = 5 if ran_imgload else 20
+                if not self._wait_prepare_delay(job_id, run_token, prepare_delay):
                     return
 
                 with self._lock:
