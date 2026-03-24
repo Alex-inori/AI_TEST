@@ -672,8 +672,9 @@ function createNewJobCard(prefill = {}, insertAfterNode = null, options = {}) {
   }
 }
 function initJobsTimingSettings() {
-  const options = [{ value: 'longtime', label: 'longtime' }];
+  const options = [];
   for (let value = 10; value <= 240; value += 10) options.push(value);
+  options.push({ value: 'longtime', label: 'longtime' });
   jobsDurationMinutes.innerHTML = options
     .map((option) => {
       if (typeof option === 'number') return `<option value="${option}">${option} min</option>`;
