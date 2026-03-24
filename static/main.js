@@ -17,6 +17,11 @@ let uartSocket = null;
 let uartPingTimer = null;
 let uartReconnectTimer = null;
 
+function isEditingUartInput() {
+  const active = document.activeElement;
+  return !!(active && active.classList && active.classList.contains('uart-column-input'));
+}
+
 function isRunningStatus(status) {
   const text = String(status || '');
   return text.startsWith('Runing') || text.startsWith('Running');
@@ -39,6 +44,70 @@ function ensureUartJobDevice(jobId, device) {
   const devices = uartBuffers.get(jobKey);
   if (!devices.has(devKey)) devices.set(devKey, []);
   return devices.get(devKey);
+}
+function escapeHtml(text) {
+  return String(text || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+function ansiColorToCss(code) {
+  const fgMap = {
+    30: '#000000', 31: '#ef4444', 32: '#22c55e', 33: '#eab308', 34: '#3b82f6', 35: '#d946ef', 36: '#06b6d4', 37: '#e5e7eb',
+    90: '#6b7280', 91: '#f87171', 92: '#4ade80', 93: '#facc15', 94: '#60a5fa', 95: '#e879f9', 96: '#22d3ee', 97: '#ffffff',
+  };
+  const bgMap = {
+    40: '#000000', 41: '#7f1d1d', 42: '#14532d', 43: '#713f12', 44: '#1e3a8a', 45: '#701a75', 46: '#083344', 47: '#d1d5db',
+    100: '#374151', 101: '#b91c1c', 102: '#15803d', 103: '#a16207', 104: '#1d4ed8', 105: '#a21caf', 106: '#0e7490', 107: '#f3f4f6',
+  };
+  if (fgMap[code]) return { type: 'fg', value: fgMap[code] };
+  if (bgMap[code]) return { type: 'bg', value: bgMap[code] };
+  return null;
+}
+function ansiToHtml(text) {
+  const input = String(text || '');
+  const parts = input.split(/(\x1b\[[0-9;]*m)/g);
+  let fg = '';
+  let bg = '';
+  let bold = false;
+  const html = [];
+  for (const part of parts) {
+    if (!part) continue;
+    const match = part.match(/^\x1b\[([0-9;]*)m$/);
+    if (match) {
+      const codes = match[1] ? match[1].split(';').map((v) => Number(v)).filter((v) => Number.isInteger(v)) : [0];
+      if (!codes.length) codes.push(0);
+      codes.forEach((code) => {
+        if (code === 0) { fg = ''; bg = ''; bold = false; return; }
+        if (code === 1) { bold = true; return; }
+        if (code === 22) { bold = false; return; }
+        if (code === 39) { fg = ''; return; }
+        if (code === 49) { bg = ''; return; }
+        const mapped = ansiColorToCss(code);
+        if (!mapped) return;
+        if (mapped.type === 'fg') fg = mapped.value;
+        if (mapped.type === 'bg') bg = mapped.value;
+      });
+      continue;
+    }
+    const style = [`${fg ? `color:${fg};` : ''}${bg ? `background:${bg};` : ''}${bold ? 'font-weight:700;' : ''}`]
+      .join('')
+      .trim();
+    const escaped = escapeHtml(part);
+    if (!style) html.push(escaped);
+    else html.push(`<span style="${style}">${escaped}</span>`);
+  }
+  return html.join('');
+}
+function renderUartOutput(preNode, lines, waitingText) {
+  const normalized = Array.isArray(lines) ? lines : [];
+  if (!normalized.length) {
+    preNode.textContent = waitingText;
+    preNode.scrollTop = preNode.scrollHeight;
+    return;
+  }
+  preNode.innerHTML = normalized.map((line) => ansiToHtml(line)).join('\n');
+  preNode.scrollTop = preNode.scrollHeight;
 }
 function appendUartLine(jobId, device, line, ts) {
   const jobKey = String(jobId || '');
@@ -113,6 +182,17 @@ function connectUartSocket() {
     }, 1500);
   };
 }
+function sendUartInput(jobId, device, content, appendNewline = true) {
+  if (!uartSocket || uartSocket.readyState !== WebSocket.OPEN) return false;
+  uartSocket.send(JSON.stringify({
+    type: 'uart_input',
+    job_id: String(jobId || ''),
+    device: String(device || ''),
+    content: String(content || ''),
+    append_newline: !!appendNewline,
+  }));
+  return true;
+}
 function renderUartPanel(panel, jobId, uartPaths) {
   const devicesMap = uartBuffers.get(String(jobId)) || new Map();
   const sourceDevices = [...new Set([...(uartPaths || []), ...Array.from(devicesMap.keys())].map((v) => String(v || '').trim()).filter(Boolean))];
@@ -137,10 +217,39 @@ function renderUartPanel(panel, jobId, uartPaths) {
     pre.className = 'uart-column-output';
     pre.dataset.device = device;
     const lines = devicesMap.get(device) || [];
-    pre.textContent = lines.length ? lines.join('\n') : `Waiting output from ${device} ...`;
-    pre.scrollTop = pre.scrollHeight;
+    renderUartOutput(pre, lines, `Waiting output from ${device} ...`);
+    const inputRow = document.createElement('div');
+    inputRow.className = 'uart-column-input-row';
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'uart-column-input';
+    input.placeholder = 'Input and press Enter / Send';
+    const sendBtn = document.createElement('button');
+    sendBtn.type = 'button';
+    sendBtn.className = 'uart-column-send-btn';
+    sendBtn.textContent = '\u23CE';
+    const submitInput = () => {
+      const value = input.value;
+      if (!value) return;
+      const sent = sendUartInput(jobId, device, value, true);
+      if (!sent) {
+        appendUartLine(String(jobId), device, '[UI] UART socket not connected; input not sent', new Date().toISOString().slice(0, 19));
+        patchUartPanelLine(panel, String(jobId), device);
+        return;
+      }
+      input.value = '';
+    };
+    sendBtn.addEventListener('click', submitInput);
+    input.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter') return;
+      event.preventDefault();
+      submitInput();
+    });
+    inputRow.appendChild(input);
+    inputRow.appendChild(sendBtn);
     column.appendChild(title);
     column.appendChild(pre);
+    column.appendChild(inputRow);
     grid.appendChild(column);
   });
   panel.appendChild(grid);
@@ -157,8 +266,7 @@ function patchUartPanelLine(panel, jobId, device) {
   if (!pre) return false;
   const devicesMap = uartBuffers.get(String(jobId)) || new Map();
   const lines = devicesMap.get(targetDevice) || [];
-  pre.textContent = lines.length ? lines.join('\n') : `Waiting output from ${targetDevice} ...`;
-  pre.scrollTop = pre.scrollHeight;
+  renderUartOutput(pre, lines, `Waiting output from ${targetDevice} ...`);
   return true;
 }
 function findRecentJobCard(jobId) {
@@ -825,6 +933,7 @@ async function refreshRecentJobs() {
     const stillNeedsConfirm = Boolean(targetJob && needsStopConfirmReminder(targetJob));
     if (!stillNeedsConfirm) closeStopConfirmModal();
   }
+  if (isEditingUartInput()) return;
   renderRecentJobs(jobs);
 }
 async function bootstrap() {

@@ -311,6 +311,9 @@ button { padding: 9px 12px; border: none; border-radius: 7px; cursor: pointer; b
   background: #0f172a;
   color: #e2e8f0;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 280px;
 }
 
 .uart-column-title {
@@ -330,4 +333,36 @@ button { padding: 9px 12px; border: none; border-radius: 7px; cursor: pointer; b
   word-break: break-word;
   font-size: 12px;
   line-height: 1.45;
+  flex: 1 1 auto;
+}
+
+.uart-column-input-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  padding: 8px 10px 10px;
+  border-top: 1px solid #1e293b;
+  background: #111827;
+}
+
+.uart-column-input {
+  min-height: 34px;
+  background: #0b1220;
+  color: #e2e8f0;
+  border: 1px solid #334155;
+}
+
+.uart-column-send-btn {
+  min-height: 34px;
+  padding: 6px 12px;
+  background: transparent;
+  border: 1px solid #cbd5e1;
+  color: #e2e8f0;
+  min-width: 42px;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.uart-column-send-btn:hover {
+  background: rgba(148, 163, 184, 0.14);
 }
