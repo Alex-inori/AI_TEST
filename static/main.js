@@ -672,10 +672,22 @@ function createNewJobCard(prefill = {}, insertAfterNode = null, options = {}) {
   }
 }
 function initJobsTimingSettings() {
-  const options = [6];
+  const options = [{ value: 'longtime', label: 'longtime' }];
   for (let value = 10; value <= 240; value += 10) options.push(value);
-  jobsDurationMinutes.innerHTML = options.map((value) => `<option value="${value}">${value} min</option>`).join('');
+  jobsDurationMinutes.innerHTML = options
+    .map((option) => {
+      if (typeof option === 'number') return `<option value="${option}">${option} min</option>`;
+      return `<option value="${option.value}">${option.label}</option>`;
+    })
+    .join('');
   jobsDurationMinutes.value = '10';
+}
+function parseSelectedDurationMinutes(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  if (raw === 'longtime') return 0;
+  const parsed = Number.parseInt(raw, 10);
+  if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  return 10;
 }
 function collectNewJobs() {
   return Array.from(newJobsList.querySelectorAll('.job-card')).map((card) => {
@@ -699,7 +711,7 @@ function collectNewJobs() {
         cfg_file: card.querySelector('input[name="openocd_cfg_file"]').value.trim(),
       },
       uart_paths: uartPaths,
-      duration_minutes: Number.parseInt(jobsDurationMinutes.value, 10) || 10,
+      duration_minutes: parseSelectedDurationMinutes(jobsDurationMinutes.value),
       auto_finish: autoFinishEnabled.checked,
       user_id: currentUserId,
     };
@@ -785,15 +797,15 @@ function formatWait(seconds) {
   return `${m}m ${s}s`;
 }
 function buildLeftTimeText(job, payload) {
-  if (!isRunningStatus(job.status)) return '-';
+  if (!isRunningStatus(job.status)) return { text: '', isLongtime: false };
   const durationMinutes = Number.parseInt(payload.duration_minutes, 10) || 0;
-  if (durationMinutes <= 0) return '-';
+  if (durationMinutes <= 0) return { text: 'longtime', isLongtime: true };
   const recentSince = Date.parse(job.submit_time || '');
-  if (!Number.isFinite(recentSince)) return '-';
+  if (!Number.isFinite(recentSince)) return { text: '-', isLongtime: false };
   const endAt = recentSince + durationMinutes * 60 * 1000;
   const leftMs = endAt - Date.now();
   const leftMinutes = Math.max(0, Math.ceil(leftMs / 60000));
-  return `${leftMinutes} min`;
+  return { text: `${leftMinutes} min`, isLongtime: false };
 }
 async function cancelWaitingJob(waitingId) {
   const response = await fetch(`/api/waiting-jobs/${waitingId}?user_id=${encodeURIComponent(currentUserId)}`, { method: 'DELETE' });
@@ -842,6 +854,8 @@ function renderRecentJobs(jobs) {
   if (!jobs.length) return (recentJobs.textContent = 'No jobs yet');
   jobs.forEach((job) => {
     const payload = job.payload || {};
+    const leftTime = buildLeftTimeText(job, payload);
+    const leftTimeClass = leftTime.isLongtime ? 'val lefttime-longtime' : 'val';
     const item = document.createElement('div');
     item.className = 'recent-card row-grid';
     item.dataset.jobId = String(job.id);
@@ -849,7 +863,7 @@ function renderRecentJobs(jobs) {
       <div class="kv jobid-kv"><span class="key">JobsID</span><span class="val jobid-val">${payload.jobs_id || '-'}</span></div>
       <div class="kv status-kv"><span class="key">Status</span><span class="val status ${statusClassName(job.status)}">${job.status}</span></div>
       <div class="kv"><span class="key">HAPS Platform</span><span class="val">${payload.haps_platform || '-'}</span></div>
-      <div class="kv lefttime-kv"><span class="key">Left Time</span><span class="val">${buildLeftTimeText(job, payload)}</span></div>
+      <div class="kv lefttime-kv"><span class="key">Left Time</span><span class="${leftTimeClass}">${leftTime.text}</span></div>
       <div class="kv endtime-kv"><span class="key">Endtime</span><span class="val">${job.end_time || '-'}</span></div>
       <div class="kv loginfo-kv"><span class="key">Log Info</span><span class="val">${payload.log_info || '-'}</span></div>
       <div class="actions"></div>

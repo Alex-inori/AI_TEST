@@ -83,6 +83,7 @@ h1, h2 { margin: 0 0 12px; }
   justify-content: center;
 }
 .panel-recent .val { font-size: 14px; }
+.panel-recent .val.lefttime-longtime { color: #dc2626; font-weight: 700; }
 .panel-recent .kv .key, .panel-recent .kv .val { min-height: 38px; box-sizing: border-box; width: 100%; }
 .key-btn { border: none; cursor: pointer; }
 
