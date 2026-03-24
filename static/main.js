@@ -860,9 +860,10 @@ function renderRecentJobs(jobs) {
     const leftTimeClass = leftTime && leftTime.isLongtime ? 'val lefttime-longtime' : 'val';
     const leftTimeHtml = running
       ? `<div class="kv lefttime-kv"><span class="key">Left Time</span><span class="${leftTimeClass}">${leftTime ? leftTime.text : ''}</span></div>`
-      : '<div class="kv lefttime-kv lefttime-removed" aria-hidden="true"></div>';
+      : '';
     const item = document.createElement('div');
     item.className = 'recent-card row-grid';
+    if (!running) item.classList.add('no-lefttime');
     item.dataset.jobId = String(job.id);
     item.innerHTML = `
       <div class="kv jobid-kv"><span class="key">JobsID</span><span class="val jobid-val">${payload.jobs_id || '-'}</span></div>
