@@ -164,7 +164,7 @@ function renderUartPanel(panel, jobId, uartPaths) {
     const sendBtn = document.createElement('button');
     sendBtn.type = 'button';
     sendBtn.className = 'uart-column-send-btn';
-    sendBtn.textContent = 'Send';
+    sendBtn.textContent = '\u23CE';
     const submitInput = () => {
       const value = input.value;
       if (!value) return;
