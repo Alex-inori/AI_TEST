@@ -836,8 +836,13 @@ class JobManager:
             # over waiting queue promotion while old process exits.
             job.run_token += 1
             job.process = None
+            now = datetime.now().isoformat(timespec="seconds")
+            job.submit_time = now
+            job.running_since = now
             job.status = "Running::Loading HAPS"
             job.message = "job resubmitting from Running::Loading HAPS"
+            job.stop_confirmed = False
+            job.stop_confirm_time = None
 
         if process and process.poll() is None:
             process.terminate()
@@ -854,9 +859,6 @@ class JobManager:
             if not self._is_running_status(current.status):
                 raise ValueError("job is not running")
             current.end_time = None
-            now = datetime.now().isoformat(timespec="seconds")
-            current.submit_time = now
-            current.running_since = now
             current.status = "Running::Loading HAPS"
             current.message = "job stopped and resubmitted from Running::Loading HAPS"
             current.stop_confirmed = False
