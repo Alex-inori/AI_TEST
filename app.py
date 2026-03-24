@@ -920,12 +920,12 @@ class JobManager:
             else:
                 job.message = "Unconfirmed Stop in 5 minutes"
 
-    def list_jobs(self) -> list[dict[str, Any]]:
+    def list_jobs(self, viewer_user_id: str | None = None) -> list[dict[str, Any]]:
         with self._lock:
             self._apply_timeouts_locked()
             self._promote_waiting_locked()
             self._prune_jobs_locked()
-            return [self._to_api(self._jobs[job_id]) for job_id in self._order]
+            return [self._to_api(self._jobs[job_id], viewer_user_id=viewer_user_id) for job_id in self._order]
 
     def _prune_jobs_locked(self) -> None:
         self._order = [job_id for job_id in self._order if job_id in self._jobs]
@@ -994,9 +994,13 @@ class JobManager:
         }
 
     @staticmethod
-    def _to_api(job: JobRecord) -> dict[str, Any]:
+    def _to_api(job: JobRecord, viewer_user_id: str | None = None) -> dict[str, Any]:
         payload = dict(job.payload or {})
-        payload["log_info"] = build_log_info(str(payload.get("log_path") or ""))
+        owner_user_id = str(payload.get("user_id") or "")
+        if viewer_user_id is not None and owner_user_id != str(viewer_user_id):
+            payload["log_info"] = "-"
+        else:
+            payload["log_info"] = build_log_info(str(payload.get("log_path") or ""))
         return {
             "id": job.id,
             "status": job.status,
@@ -1383,8 +1387,9 @@ def get_fs_entries(path: str = "", mode: str = "file") -> dict[str, Any]:
 
 
 @app.get("/api/jobs")
-def get_jobs() -> dict[str, Any]:
-    return {"jobs": manager.list_jobs()}
+def get_jobs(request: Request) -> dict[str, Any]:
+    viewer_user_id = get_system_user_id(request)
+    return {"jobs": manager.list_jobs(viewer_user_id=viewer_user_id)}
 
 
 @app.get("/api/platform-options")
