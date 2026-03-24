@@ -16,6 +16,7 @@ const uartLastLineSeen = new Map();
 let uartSocket = null;
 let uartPingTimer = null;
 let uartReconnectTimer = null;
+let hapsPlatforms = [];
 
 function isEditingUartInput() {
   const active = document.activeElement;
@@ -606,6 +607,18 @@ function bindDbConfigToggles(card, prefill = {}) {
     toggle.addEventListener('change', () => updateDbConfigState(card, key, toggle.checked));
   });
 }
+function applyPlatformOptions(selectNode, selectedValue = '') {
+  if (!selectNode) return;
+  const options = Array.isArray(hapsPlatforms) ? hapsPlatforms.filter((v) => String(v || '').trim()) : [];
+  selectNode.innerHTML = options.map((item) => `<option value="${item}">${item}</option>`).join('');
+  if (!options.length) {
+    selectNode.innerHTML = '<option value="">No platform config</option>';
+    selectNode.value = '';
+    return;
+  }
+  const normalizedSelected = String(selectedValue || '').trim();
+  selectNode.value = options.includes(normalizedSelected) ? normalizedSelected : options[0];
+}
 function normalizeUartPaths(prefill = {}) {
   const normalizeList = (values) => values.map((value) => String(value || '').trim()).filter(Boolean);
   if (Array.isArray(prefill.uart_paths)) return normalizeList(prefill.uart_paths);
@@ -630,7 +643,7 @@ function createNewJobCard(prefill = {}, insertAfterNode = null, options = {}) {
   const node = template.content.firstElementChild.cloneNode(true);
   const normalizedUartPaths = normalizeUartPaths(prefill);
   node.querySelector('input[name="jobs_id"]').value = options.regenerateJobsId ? makeJobsId() : (prefill.jobs_id || makeJobsId());
-  node.querySelector('select[name="haps_platform"]').value = prefill.haps_platform || 'BJ-HAPS80';
+  applyPlatformOptions(node.querySelector('select[name="haps_platform"]'), prefill.haps_platform || '');
   node.querySelector('input[name="database_path"]').value = prefill.database_path || '';
   node.querySelector('input[name="reset_script"]').value = prefill.reset_script || '';
   node.querySelector('input[name="imgload_script"]').value = prefill.imgload_script || '';
@@ -945,6 +958,18 @@ async function bootstrap() {
       currentUserId = session.user_id || currentUserId;
     }
   } catch (_) {}
+  try {
+    const platformResp = await fetch('/api/platform-options');
+    if (!platformResp.ok) {
+      alert(`Failed to load HAPS platform config: ${await platformResp.text()}`);
+      return;
+    }
+    const platformData = await platformResp.json();
+    hapsPlatforms = Array.isArray(platformData.haps_platforms) ? platformData.haps_platforms : [];
+  } catch (error) {
+    alert(`Failed to load HAPS platform config: ${error instanceof Error ? error.message : String(error)}`);
+    return;
+  }
   initJobsTimingSettings();
   createNewJobCard();
   connectUartSocket();

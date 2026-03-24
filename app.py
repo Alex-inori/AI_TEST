@@ -30,15 +30,14 @@ from pydantic import BaseModel, Field
 
 APP_ROOT = Path(__file__).resolve().parent
 CFGSHELL_CONFIG_FILE = APP_ROOT / "cfgshell.conf"
-
-DEFAULT_HAPS_SETTINGS: dict[str, Any] = {
-    "HAPS_CONFPROSH": "/tools/synopsys/R-2020.12-SP1-1/bin/confprosh",
-    "HAPS_DB_LOADING_TCL": "/home/e0007295/app_test/haps80_database_cfg.tcl",
-    "HAPS_PLATFORM": ["CD-HAPS80", "BJ-HAPS80", "CD-HAPS100-05", "CD-HAPS100-11"],
-    "UART_LOG_PATH": "/data/default_tmplog/",
-    "HAPS_RESET_TCL": "/home/e0007295/app_test/reset_release.tcl",
-    "HAPS_IMG_LOADING_TCL": "/home/e0007295/bulk/load_ap.tcl",
-    "HAPS_HMF_TXT": "/home/e0007295/app_test/hmf.txt",
+REQUIRED_HAPS_SETTINGS = {
+    "HAPS_CONFPROSH",
+    "HAPS_DB_LOADING_TCL",
+    "HAPS_PLATFORM",
+    "UART_LOG_PATH",
+    "HAPS_RESET_TCL",
+    "HAPS_IMG_LOADING_TCL",
+    "HAPS_HMF_TXT",
 }
 
 try:
@@ -55,9 +54,11 @@ def _parse_cfg_list(raw: str) -> list[str]:
 
 
 def load_haps_settings() -> dict[str, Any]:
-    settings: dict[str, Any] = dict(DEFAULT_HAPS_SETTINGS)
     if not CFGSHELL_CONFIG_FILE.exists():
-        return settings
+        raise ValueError(f"missing config file: {CFGSHELL_CONFIG_FILE}")
+
+    settings: dict[str, Any] = {}
+    loaded_keys: set[str] = set()
 
     for raw_line in CFGSHELL_CONFIG_FILE.read_text(encoding="utf-8").splitlines():
         line = raw_line.strip()
@@ -72,9 +73,14 @@ def load_haps_settings() -> dict[str, Any]:
             parsed = _parse_cfg_list(value)
             if parsed:
                 settings[key] = parsed
+                loaded_keys.add(key)
             continue
-        if key in settings:
+        if key in REQUIRED_HAPS_SETTINGS:
             settings[key] = value
+            loaded_keys.add(key)
+    missing = sorted(REQUIRED_HAPS_SETTINGS - loaded_keys)
+    if missing:
+        raise ValueError(f"missing required keys in {CFGSHELL_CONFIG_FILE}: {', '.join(missing)}")
     return settings
 
 
@@ -1310,6 +1316,16 @@ def get_jobs() -> dict[str, Any]:
     return {"jobs": manager.list_jobs()}
 
 
+@app.get("/api/platform-options")
+def get_platform_options() -> dict[str, list[str]]:
+    try:
+        settings = load_haps_settings()
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    platforms = [str(item).strip() for item in list(settings.get("HAPS_PLATFORM") or []) if str(item).strip()]
+    return {"haps_platforms": platforms}
+
+
 @app.post("/api/jobs")
 def submit_jobs(payload: SubmitJobsRequest, request: Request) -> dict[str, Any]:
     if not payload.jobs:
@@ -1318,7 +1334,10 @@ def submit_jobs(payload: SubmitJobsRequest, request: Request) -> dict[str, Any]:
     created: list[dict[str, Any]] = []
     system_user = get_system_user_id(request)
     used_uart_paths: set[str] = set()
-    settings = load_haps_settings()
+    try:
+        settings = load_haps_settings()
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
     default_platforms = [str(item).strip() for item in list(settings.get("HAPS_PLATFORM") or []) if str(item).strip()]
     default_platform = default_platforms[0] if default_platforms else "BJ-HAPS80"
 
