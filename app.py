@@ -564,7 +564,7 @@ class JobManager:
                     self._jobs[job_id].status = "Running::Loading HAPS_DB"
 
                 db_load_cmd = [*cfgshell_cmd, db_load_script, database_path]
-                if "HAPS100" in haps_platform and hmf_txt:
+                if "HAPS100" in haps_platform:
                     db_load_cmd.append(hmf_txt)
                 rc1 = subprocess.run(db_load_cmd, stdout=log_file, stderr=log_file, text=True).returncode
                 if rc1 != 0:
@@ -1100,6 +1100,11 @@ def validate_submit_payload(
         database_path = Path(db_path_text).expanduser()
         if not database_path.exists():
             raise ValueError(f"database_path not found: {database_path}")
+
+    if "HAPS100" in haps_platform and db_enabled:
+        hmf_txt = str(payload.get("haps_hmf_txt") or "").strip()
+        if not hmf_txt:
+            raise ValueError("haps_hmf_txt is required when loading database on HAPS100")
 
     reset_enabled = bool(payload.get("reset_script_enabled", False))
     imgload_enabled = bool(payload.get("imgload_script_enabled", False))
