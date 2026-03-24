@@ -189,8 +189,7 @@ class UartStreamManager:
         path_text = str(log_path or "").strip()
         if not path_text:
             return Path.cwd()
-        source = Path(path_text).expanduser()
-        return source if source.is_dir() else source.parent
+        return Path(path_text).expanduser()
 
     def _write_uart_log(self, job_id: str, device: str, line: str) -> None:
         key = (str(job_id), str(device))
@@ -540,9 +539,12 @@ class JobManager:
         try:
             log_path = str(payload.get("log_path") or "").strip()
             if log_path:
-                path = Path(log_path)
-                path.parent.mkdir(parents=True, exist_ok=True)
-                log_file = path.open("a", encoding="utf-8")
+                log_dir = Path(log_path).expanduser()
+                log_dir.mkdir(parents=True, exist_ok=True)
+                jobs_id = str(payload.get("jobs_id") or job_id)
+                safe_jobs_id = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in jobs_id)
+                process_log_path = log_dir / f"{safe_jobs_id}.log"
+                log_file = process_log_path.open("a", encoding="utf-8")
 
             if self._should_run_prepare(payload):
                 settings = self._read_haps_settings()
@@ -1026,13 +1028,7 @@ def build_default_log_path(log_root: str, jobs_id: str) -> str:
     root = (log_root or "").strip()
     if not root:
         return ""
-    base = Path(root).expanduser()
-    # If caller gives a file path, keep it. If it's a directory/default root, append jobs_id log filename.
-    if base.suffix.lower() in {".log", ".txt"}:
-        return str(base)
-    name = (jobs_id or "job").strip() or "job"
-    safe_name = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in name)
-    return str(base / f"{safe_name}.log")
+    return str(Path(root).expanduser())
 
 
 def build_jobs_id(jobs_id: str, user_id: str = "") -> str:
