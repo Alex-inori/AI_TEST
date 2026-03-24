@@ -42,7 +42,7 @@ h1, h2 { margin: 0 0 12px; }
   align-items: stretch;
 }
 .recent-card.row-grid {
-  grid-template-columns: repeat(6, minmax(165px, 1fr)) auto;
+  grid-template-columns: minmax(150px, 1.2fr) minmax(140px, 1fr) minmax(150px, 1fr) minmax(95px, 0.55fr) minmax(105px, 0.65fr) minmax(300px, 2fr) auto;
 }
 .waiting-card.row-grid {
   grid-template-columns: repeat(4, minmax(165px, 1fr));

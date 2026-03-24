@@ -784,6 +784,17 @@ function formatWait(seconds) {
   if (h > 0) return `${h}h ${m}m ${s}s`;
   return `${m}m ${s}s`;
 }
+function buildLeftTimeText(job, payload) {
+  if (!isRunningStatus(job.status)) return '-';
+  const durationMinutes = Number.parseInt(payload.duration_minutes, 10) || 0;
+  if (durationMinutes <= 0) return '-';
+  const submitAt = Date.parse(job.submit_time || '');
+  if (!Number.isFinite(submitAt)) return '-';
+  const endAt = submitAt + durationMinutes * 60 * 1000;
+  const leftMs = endAt - Date.now();
+  const leftMinutes = Math.max(0, Math.ceil(leftMs / 60000));
+  return `${leftMinutes} min`;
+}
 async function cancelWaitingJob(waitingId) {
   const response = await fetch(`/api/waiting-jobs/${waitingId}?user_id=${encodeURIComponent(currentUserId)}`, { method: 'DELETE' });
   if (!response.ok) return alert(`Cancel failed: ${await response.text()}`);
@@ -838,9 +849,9 @@ function renderRecentJobs(jobs) {
       <div class="kv jobid-kv"><span class="key">JobsID</span><span class="val jobid-val">${payload.jobs_id || '-'}</span></div>
       <div class="kv status-kv"><span class="key">Status</span><span class="val status ${statusClassName(job.status)}">${job.status}</span></div>
       <div class="kv"><span class="key">HAPS Platform</span><span class="val">${payload.haps_platform || '-'}</span></div>
-      <div class="kv"><span class="key">Duration</span><span class="val">${payload.duration_minutes || 0} min</span></div>
-      <div class="kv"><span class="key">Endtime</span><span class="val">${job.end_time || '-'}</span></div>
-      <div class="kv"><span class="key">Log Info</span><span class="val">${payload.log_info || '-'}</span></div>
+      <div class="kv lefttime-kv"><span class="key">Left Time</span><span class="val">${buildLeftTimeText(job, payload)}</span></div>
+      <div class="kv endtime-kv"><span class="key">Endtime</span><span class="val">${job.end_time || '-'}</span></div>
+      <div class="kv loginfo-kv"><span class="key">Log Info</span><span class="val">${payload.log_info || '-'}</span></div>
       <div class="actions"></div>
     `;
     const actions = item.querySelector('.actions');
