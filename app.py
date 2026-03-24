@@ -730,7 +730,9 @@ class JobManager:
             duration_minutes = 0
 
         if duration_minutes <= 0:
-            sleep_seconds = 20
+            # "longtime" jobs are represented as duration_minutes=0 and should not
+            # self-finish. Keep the process alive until user manually clicks Finish.
+            return "python3 -c \"import time\nwhile True:\n    time.sleep(3600)\""
         else:
             # Add a small buffer so the process won't naturally exit before timeout handling.
             sleep_seconds = duration_minutes * 60 + self.STOP_GRACE_MINUTES * 60 + 30

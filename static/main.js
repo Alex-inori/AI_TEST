@@ -854,8 +854,12 @@ function renderRecentJobs(jobs) {
   if (!jobs.length) return (recentJobs.textContent = 'No jobs yet');
   jobs.forEach((job) => {
     const payload = job.payload || {};
-    const leftTime = buildLeftTimeText(job, payload);
-    const leftTimeClass = leftTime.isLongtime ? 'val lefttime-longtime' : 'val';
+    const running = isRunningStatus(job.status);
+    const leftTime = running ? buildLeftTimeText(job, payload) : null;
+    const leftTimeClass = leftTime && leftTime.isLongtime ? 'val lefttime-longtime' : 'val';
+    const leftTimeHtml = running
+      ? `<div class="kv lefttime-kv"><span class="key">Left Time</span><span class="${leftTimeClass}">${leftTime ? leftTime.text : ''}</span></div>`
+      : '';
     const item = document.createElement('div');
     item.className = 'recent-card row-grid';
     item.dataset.jobId = String(job.id);
@@ -863,7 +867,7 @@ function renderRecentJobs(jobs) {
       <div class="kv jobid-kv"><span class="key">JobsID</span><span class="val jobid-val">${payload.jobs_id || '-'}</span></div>
       <div class="kv status-kv"><span class="key">Status</span><span class="val status ${statusClassName(job.status)}">${job.status}</span></div>
       <div class="kv"><span class="key">HAPS Platform</span><span class="val">${payload.haps_platform || '-'}</span></div>
-      <div class="kv lefttime-kv"><span class="key">Left Time</span><span class="${leftTimeClass}">${leftTime.text}</span></div>
+      ${leftTimeHtml}
       <div class="kv endtime-kv"><span class="key">Endtime</span><span class="val">${job.end_time || '-'}</span></div>
       <div class="kv loginfo-kv"><span class="key">Log Info</span><span class="val">${payload.log_info || '-'}</span></div>
       <div class="actions"></div>
@@ -899,7 +903,7 @@ function renderRecentJobs(jobs) {
       });
       actions.appendChild(uartBtn);
     }
-    if (isRunningStatus(job.status)) {
+    if (running) {
       if (isOwner) {
         const stopAndResubmitBtn = document.createElement('button');
         stopAndResubmitBtn.textContent = 'Stop and Resubmit';
