@@ -649,7 +649,6 @@ function createNewJobCard(prefill = {}, insertAfterNode = null, options = {}) {
   node.querySelector('input[name="imgload_script"]').value = prefill.imgload_script || '';
   node.querySelector('input[name="binfile"]').value = prefill.binfile || '';
   node.querySelector('input[name="img_file"]').value = prefill.img_file || '';
-  node.querySelector('input[name="log_path"]').value = prefill.log_path || '';
   const openocdCfg = prefill.openocd_cfg || {};
   node.querySelector('input[name="openocd_tool_path"]').value = openocdCfg.tool_path || '';
   node.querySelector('input[name="openocd_cfg_file"]').value = openocdCfg.cfg_file || '';
@@ -695,7 +694,6 @@ function collectNewJobs() {
       imgload_script_enabled: imgLoadScriptEnabled,
       binfile: card.querySelector('input[name="binfile"]').value.trim(),
       img_file: card.querySelector('input[name="img_file"]').value.trim(),
-      log_path: card.querySelector('input[name="log_path"]').value.trim(),
       openocd_cfg: {
         tool_path: card.querySelector('input[name="openocd_tool_path"]').value.trim(),
         cfg_file: card.querySelector('input[name="openocd_cfg_file"]').value.trim(),

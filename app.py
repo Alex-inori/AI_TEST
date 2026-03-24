@@ -1024,11 +1024,14 @@ def build_log_info(log_path: str) -> str:
     return f"{directory}: {preview}"
 
 
-def build_default_log_path(log_root: str, jobs_id: str) -> str:
+def build_default_log_path(log_root: str, user_id: str, jobs_id: str) -> str:
     root = (log_root or "").strip()
     if not root:
         return ""
-    return str(Path(root).expanduser())
+    base = Path(root).expanduser()
+    safe_user = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in str(user_id or "user"))
+    safe_job = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in str(jobs_id or "job"))
+    return str(base / f"{safe_user}_{safe_job}")
 
 
 def build_jobs_id(jobs_id: str, user_id: str = "") -> str:
@@ -1413,8 +1416,13 @@ def submit_jobs(payload: SubmitJobsRequest, request: Request) -> dict[str, Any]:
                 data["reset_script"] = str(settings.get("HAPS_RESET_TCL") or "").strip()
             if bool(data.get("imgload_script_enabled", False)) and not str(data.get("imgload_script") or "").strip():
                 data["imgload_script"] = str(settings.get("HAPS_IMG_LOADING_TCL") or "").strip()
-            if not str(data.get("log_path") or "").strip():
-                data["log_path"] = build_default_log_path(str(settings.get("UART_LOG_PATH") or ""), data["jobs_id"])
+            data["log_path"] = build_default_log_path(
+                str(settings.get("UART_LOG_PATH") or ""),
+                data["user_id"],
+                data["jobs_id"],
+            )
+            if data["log_path"]:
+                Path(data["log_path"]).mkdir(parents=True, exist_ok=True)
             if "HAPS100" in str(data.get("haps_platform") or ""):
                 data["haps_hmf_txt"] = str(settings.get("HAPS_HMF_TXT") or "").strip()
 
