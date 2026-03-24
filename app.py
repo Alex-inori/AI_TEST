@@ -118,6 +118,7 @@ class JobRecord:
     payload: dict[str, Any]
     status: str
     submit_time: str
+    running_since: str
     end_time: str | None = None
     message: str = ""
     stop_confirmed: bool = False
@@ -473,6 +474,7 @@ class JobManager:
             payload=payload,
             status=initial_status,
             submit_time=now,
+            running_since=now,
             message="job started",
         )
         self._jobs[job.id] = job
@@ -852,6 +854,9 @@ class JobManager:
             if not self._is_running_status(current.status):
                 raise ValueError("job is not running")
             current.end_time = None
+            now = datetime.now().isoformat(timespec="seconds")
+            current.submit_time = now
+            current.running_since = now
             current.status = "Running::Loading HAPS"
             current.message = "job stopped and resubmitted from Running::Loading HAPS"
             current.stop_confirmed = False
@@ -996,6 +1001,7 @@ class JobManager:
             "id": job.id,
             "status": job.status,
             "submit_time": job.submit_time,
+            "running_since": job.running_since,
             "end_time": job.end_time,
             "message": job.message,
             "stop_confirmed": job.stop_confirmed,

@@ -788,9 +788,9 @@ function buildLeftTimeText(job, payload) {
   if (!isRunningStatus(job.status)) return '-';
   const durationMinutes = Number.parseInt(payload.duration_minutes, 10) || 0;
   if (durationMinutes <= 0) return '-';
-  const submitAt = Date.parse(job.submit_time || '');
-  if (!Number.isFinite(submitAt)) return '-';
-  const endAt = submitAt + durationMinutes * 60 * 1000;
+  const runningSince = Date.parse(job.running_since || job.submit_time || '');
+  if (!Number.isFinite(runningSince)) return '-';
+  const endAt = runningSince + durationMinutes * 60 * 1000;
   const leftMs = endAt - Date.now();
   const leftMinutes = Math.max(0, Math.ceil(leftMs / 60000));
   return `${leftMinutes} min`;
