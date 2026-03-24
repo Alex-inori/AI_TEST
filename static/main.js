@@ -16,6 +16,7 @@ const uartLastLineSeen = new Map();
 let uartSocket = null;
 let uartPingTimer = null;
 let uartReconnectTimer = null;
+let hapsPlatforms = [];
 
 function isEditingUartInput() {
   const active = document.activeElement;
@@ -606,6 +607,18 @@ function bindDbConfigToggles(card, prefill = {}) {
     toggle.addEventListener('change', () => updateDbConfigState(card, key, toggle.checked));
   });
 }
+function applyPlatformOptions(selectNode, selectedValue = '') {
+  if (!selectNode) return;
+  const options = Array.isArray(hapsPlatforms) ? hapsPlatforms.filter((v) => String(v || '').trim()) : [];
+  selectNode.innerHTML = options.map((item) => `<option value="${item}">${item}</option>`).join('');
+  if (!options.length) {
+    selectNode.innerHTML = '<option value="">No platform config</option>';
+    selectNode.value = '';
+    return;
+  }
+  const normalizedSelected = String(selectedValue || '').trim();
+  selectNode.value = options.includes(normalizedSelected) ? normalizedSelected : options[0];
+}
 function normalizeUartPaths(prefill = {}) {
   const normalizeList = (values) => values.map((value) => String(value || '').trim()).filter(Boolean);
   if (Array.isArray(prefill.uart_paths)) return normalizeList(prefill.uart_paths);
@@ -630,13 +643,12 @@ function createNewJobCard(prefill = {}, insertAfterNode = null, options = {}) {
   const node = template.content.firstElementChild.cloneNode(true);
   const normalizedUartPaths = normalizeUartPaths(prefill);
   node.querySelector('input[name="jobs_id"]').value = options.regenerateJobsId ? makeJobsId() : (prefill.jobs_id || makeJobsId());
-  node.querySelector('select[name="haps_platform"]').value = prefill.haps_platform || 'BJ-HAPS80';
+  applyPlatformOptions(node.querySelector('select[name="haps_platform"]'), prefill.haps_platform || '');
   node.querySelector('input[name="database_path"]').value = prefill.database_path || '';
   node.querySelector('input[name="reset_script"]').value = prefill.reset_script || '';
   node.querySelector('input[name="imgload_script"]').value = prefill.imgload_script || '';
   node.querySelector('input[name="binfile"]').value = prefill.binfile || '';
   node.querySelector('input[name="img_file"]').value = prefill.img_file || '';
-  node.querySelector('input[name="log_path"]').value = prefill.log_path || '';
   const openocdCfg = prefill.openocd_cfg || {};
   node.querySelector('input[name="openocd_tool_path"]').value = openocdCfg.tool_path || '';
   node.querySelector('input[name="openocd_cfg_file"]').value = openocdCfg.cfg_file || '';
@@ -682,7 +694,6 @@ function collectNewJobs() {
       imgload_script_enabled: imgLoadScriptEnabled,
       binfile: card.querySelector('input[name="binfile"]').value.trim(),
       img_file: card.querySelector('input[name="img_file"]').value.trim(),
-      log_path: card.querySelector('input[name="log_path"]').value.trim(),
       openocd_cfg: {
         tool_path: card.querySelector('input[name="openocd_tool_path"]').value.trim(),
         cfg_file: card.querySelector('input[name="openocd_cfg_file"]').value.trim(),
@@ -705,12 +716,10 @@ function validateJobsBeforeSubmit(jobs) {
       throw new Error(`Job ${job.jobs_id || '-'}: DataBase Path is enabled but empty.`);
     }
     if (job.reset_script_enabled) {
-      if (!job.reset_script) throw new Error(`Job ${job.jobs_id || '-'}: Reset Script Path is enabled but empty.`);
-      if (!tclRegex.test(job.reset_script)) throw new Error(`Job ${job.jobs_id || '-'}: Reset Script must be a .tcl file.`);
+      if (job.reset_script && !tclRegex.test(job.reset_script)) throw new Error(`Job ${job.jobs_id || '-'}: Reset Script must be a .tcl file.`);
     }
     if (job.imgload_script_enabled) {
-      if (!job.imgload_script) throw new Error(`Job ${job.jobs_id || '-'}: ImgLoad Script Path is enabled but empty.`);
-      if (!tclRegex.test(job.imgload_script)) throw new Error(`Job ${job.jobs_id || '-'}: ImgLoad Script must be a .tcl file.`);
+      if (job.imgload_script && !tclRegex.test(job.imgload_script)) throw new Error(`Job ${job.jobs_id || '-'}: ImgLoad Script must be a .tcl file.`);
       if (!job.database_path_enabled) throw new Error(`Job ${job.jobs_id || '-'}: ImgLoad Script Path requires DataBase Path enabled.`);
       if (!job.reset_script_enabled) throw new Error(`Job ${job.jobs_id || '-'}: ImgLoad Script Path requires Reset Script Path enabled.`);
       if (!job.img_file) throw new Error(`Job ${job.jobs_id || '-'}: ImgLoad Script Path is enabled but IMG File path is empty.`);
@@ -775,6 +784,17 @@ function formatWait(seconds) {
   if (h > 0) return `${h}h ${m}m ${s}s`;
   return `${m}m ${s}s`;
 }
+function buildLeftTimeText(job, payload) {
+  if (!isRunningStatus(job.status)) return '-';
+  const durationMinutes = Number.parseInt(payload.duration_minutes, 10) || 0;
+  if (durationMinutes <= 0) return '-';
+  const recentSince = Date.parse(job.submit_time || '');
+  if (!Number.isFinite(recentSince)) return '-';
+  const endAt = recentSince + durationMinutes * 60 * 1000;
+  const leftMs = endAt - Date.now();
+  const leftMinutes = Math.max(0, Math.ceil(leftMs / 60000));
+  return `${leftMinutes} min`;
+}
 async function cancelWaitingJob(waitingId) {
   const response = await fetch(`/api/waiting-jobs/${waitingId}?user_id=${encodeURIComponent(currentUserId)}`, { method: 'DELETE' });
   if (!response.ok) return alert(`Cancel failed: ${await response.text()}`);
@@ -829,9 +849,9 @@ function renderRecentJobs(jobs) {
       <div class="kv jobid-kv"><span class="key">JobsID</span><span class="val jobid-val">${payload.jobs_id || '-'}</span></div>
       <div class="kv status-kv"><span class="key">Status</span><span class="val status ${statusClassName(job.status)}">${job.status}</span></div>
       <div class="kv"><span class="key">HAPS Platform</span><span class="val">${payload.haps_platform || '-'}</span></div>
-      <div class="kv"><span class="key">Duration</span><span class="val">${payload.duration_minutes || 0} min</span></div>
-      <div class="kv"><span class="key">Endtime</span><span class="val">${job.end_time || '-'}</span></div>
-      <div class="kv"><span class="key">Log Info</span><span class="val">${payload.log_info || '-'}</span></div>
+      <div class="kv lefttime-kv"><span class="key">Left Time</span><span class="val">${buildLeftTimeText(job, payload)}</span></div>
+      <div class="kv endtime-kv"><span class="key">Endtime</span><span class="val">${job.end_time || '-'}</span></div>
+      <div class="kv loginfo-kv"><span class="key">Log Info</span><span class="val">${payload.log_info || '-'}</span></div>
       <div class="actions"></div>
     `;
     const actions = item.querySelector('.actions');
@@ -945,6 +965,18 @@ async function bootstrap() {
       currentUserId = session.user_id || currentUserId;
     }
   } catch (_) {}
+  try {
+    const platformResp = await fetch('/api/platform-options');
+    if (!platformResp.ok) {
+      alert(`Failed to load HAPS platform config: ${await platformResp.text()}`);
+      return;
+    }
+    const platformData = await platformResp.json();
+    hapsPlatforms = Array.isArray(platformData.haps_platforms) ? platformData.haps_platforms : [];
+  } catch (error) {
+    alert(`Failed to load HAPS platform config: ${error instanceof Error ? error.message : String(error)}`);
+    return;
+  }
   initJobsTimingSettings();
   createNewJobCard();
   connectUartSocket();
