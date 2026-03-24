@@ -29,11 +29,53 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 APP_ROOT = Path(__file__).resolve().parent
+CFGSHELL_CONFIG_FILE = APP_ROOT / "cfgshell.conf"
+
+DEFAULT_HAPS_SETTINGS: dict[str, Any] = {
+    "HAPS_CONFPROSH": "/tools/synopsys/R-2020.12-SP1-1/bin/confprosh",
+    "HAPS_DB_LOADING_TCL": "/home/e0007295/app_test/haps80_database_cfg.tcl",
+    "HAPS_PLATFORM": ["CD-HAPS80", "BJ-HAPS80", "CD-HAPS100-05", "CD-HAPS100-11"],
+    "UART_LOG_PATH": "/data/default_tmplog/",
+    "HAPS_RESET_TCL": "/home/e0007295/app_test/reset_release.tcl",
+    "HAPS_IMG_LOADING_TCL": "/home/e0007295/bulk/load_ap.tcl",
+    "HAPS_HMF_TXT": "/home/e0007295/app_test/hmf.txt",
+}
 
 try:
     import serial  # type: ignore[import-not-found]
 except ImportError:  # pragma: no cover
     serial = None
+
+
+def _parse_cfg_list(raw: str) -> list[str]:
+    value = (raw or "").strip()
+    if value.startswith("[") and value.endswith("]"):
+        value = value[1:-1]
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def load_haps_settings() -> dict[str, Any]:
+    settings: dict[str, Any] = dict(DEFAULT_HAPS_SETTINGS)
+    if not CFGSHELL_CONFIG_FILE.exists():
+        return settings
+
+    for raw_line in CFGSHELL_CONFIG_FILE.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if ":" not in line:
+            continue
+        key, raw_value = line.split(":", 1)
+        key = key.strip()
+        value = raw_value.strip()
+        if key == "HAPS_PLATFORM":
+            parsed = _parse_cfg_list(value)
+            if parsed:
+                settings[key] = parsed
+            continue
+        if key in settings:
+            settings[key] = value
+    return settings
 
 
 class OpenOcdCfgInput(BaseModel):
@@ -347,8 +389,6 @@ class JobManager:
     MAX_RECENT_JOBS = 10
     STOP_CONFIRM_REMINDER_MINUTES = 5
     STOP_GRACE_MINUTES = 5
-    CFGSHELL_CONFIG_FILE = APP_ROOT / "cfgshell.conf"
-
     def __init__(self, uart_stream: UartStreamManager) -> None:
         self._jobs: dict[str, JobRecord] = {}
         self._order: list[str] = []
@@ -383,19 +423,14 @@ class JobManager:
     def _is_running_status(status: str) -> bool:
         return str(status).startswith("Runing") or str(status).startswith("Running")
 
-    def _read_cfgshell_config(self) -> tuple[list[str], str]:
-        path = self.CFGSHELL_CONFIG_FILE
-        if not path.exists():
-            raise ValueError(f"missing config file: {path}")
-
-        lines = [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-        if len(lines) < 2:
-            raise ValueError(f"invalid config file {path}, expected at least 2 lines")
-
-        shell_cmd = shlex.split(lines[0])
+    @staticmethod
+    def _read_haps_settings() -> dict[str, Any]:
+        settings = load_haps_settings()
+        shell_cmd = shlex.split(str(settings.get("HAPS_CONFPROSH") or "").strip())
         if not shell_cmd:
-            raise ValueError("cfgshell command is empty in config line 1")
-        return shell_cmd, lines[1]
+            raise ValueError("HAPS_CONFPROSH is empty")
+        settings["HAPS_CONFPROSH_CMD"] = shell_cmd
+        return settings
 
     @staticmethod
     def _should_run_prepare(payload: dict[str, Any]) -> bool:
@@ -441,9 +476,13 @@ class JobManager:
                 log_file = path.open("a", encoding="utf-8")
 
             if self._should_run_prepare(payload):
-                cfgshell_cmd, db_load_script = self._read_cfgshell_config()
+                settings = self._read_haps_settings()
+                cfgshell_cmd = list(settings.get("HAPS_CONFPROSH_CMD") or [])
+                db_load_script = str(settings.get("HAPS_DB_LOADING_TCL") or "").strip()
                 database_path = str(payload.get("database_path") or "").strip()
                 reset_script = str(payload.get("reset_script") or "").strip()
+                haps_platform = str(payload.get("haps_platform") or "").strip()
+                hmf_txt = str(payload.get("haps_hmf_txt") or "").strip()
                 ran_imgload = False
 
                 with self._lock:
@@ -451,7 +490,10 @@ class JobManager:
                         return
                     self._jobs[job_id].status = "Running::Loading HAPS_DB"
 
-                rc1 = subprocess.run([*cfgshell_cmd, db_load_script, database_path], stdout=log_file, stderr=log_file, text=True).returncode
+                db_load_cmd = [*cfgshell_cmd, db_load_script, database_path]
+                if "HAPS100" in haps_platform and hmf_txt:
+                    db_load_cmd.append(hmf_txt)
+                rc1 = subprocess.run(db_load_cmd, stdout=log_file, stderr=log_file, text=True).returncode
                 if rc1 != 0:
                     with self._lock:
                         if self._job_is_current_locked(job_id, run_token):
@@ -908,6 +950,20 @@ def build_log_info(log_path: str) -> str:
         preview += f" ... (+{len(files)-3} more)"
     return f"{directory}: {preview}"
 
+
+def build_default_log_path(log_root: str, jobs_id: str) -> str:
+    root = (log_root or "").strip()
+    if not root:
+        return ""
+    base = Path(root).expanduser()
+    # If caller gives a file path, keep it. If it's a directory/default root, append jobs_id log filename.
+    if base.suffix.lower() in {".log", ".txt"}:
+        return str(base)
+    name = (jobs_id or "job").strip() or "job"
+    safe_name = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in name)
+    return str(base / f"{safe_name}.log")
+
+
 def build_jobs_id(jobs_id: str, user_id: str = "") -> str:
     if jobs_id.strip():
         return jobs_id
@@ -944,7 +1000,18 @@ def _validate_img_file(path_text: str, *, field_name: str) -> Path:
     return path
 
 
-def validate_submit_payload(payload: dict[str, Any], used_uart_paths: set[str] | None = None) -> None:
+def validate_submit_payload(
+    payload: dict[str, Any],
+    settings: dict[str, Any],
+    used_uart_paths: set[str] | None = None,
+) -> None:
+    haps_platform = str(payload.get("haps_platform") or "").strip()
+    allowed_platforms = [str(item).strip() for item in list(settings.get("HAPS_PLATFORM") or []) if str(item).strip()]
+    if not haps_platform:
+        raise ValueError("haps_platform is required")
+    if allowed_platforms and haps_platform not in allowed_platforms:
+        raise ValueError(f"haps_platform not supported: {haps_platform}")
+
     db_enabled = bool(payload.get("database_path_enabled", False))
     db_path_text = str(payload.get("database_path") or "").strip()
     if db_enabled:
@@ -1251,12 +1318,27 @@ def submit_jobs(payload: SubmitJobsRequest, request: Request) -> dict[str, Any]:
     created: list[dict[str, Any]] = []
     system_user = get_system_user_id(request)
     used_uart_paths: set[str] = set()
+    settings = load_haps_settings()
+    default_platforms = [str(item).strip() for item in list(settings.get("HAPS_PLATFORM") or []) if str(item).strip()]
+    default_platform = default_platforms[0] if default_platforms else "BJ-HAPS80"
+
     for item in payload.jobs:
         data = json.loads(item.model_dump_json())
         try:
-            validate_submit_payload(data, used_uart_paths=used_uart_paths)
             data["user_id"] = system_user
+            if not str(data.get("haps_platform") or "").strip():
+                data["haps_platform"] = default_platform
             data["jobs_id"] = build_jobs_id(data.get("jobs_id", ""), data["user_id"])
+            if bool(data.get("reset_script_enabled", False)) and not str(data.get("reset_script") or "").strip():
+                data["reset_script"] = str(settings.get("HAPS_RESET_TCL") or "").strip()
+            if bool(data.get("imgload_script_enabled", False)) and not str(data.get("imgload_script") or "").strip():
+                data["imgload_script"] = str(settings.get("HAPS_IMG_LOADING_TCL") or "").strip()
+            if not str(data.get("log_path") or "").strip():
+                data["log_path"] = build_default_log_path(str(settings.get("UART_LOG_PATH") or ""), data["jobs_id"])
+            if "HAPS100" in str(data.get("haps_platform") or ""):
+                data["haps_hmf_txt"] = str(settings.get("HAPS_HMF_TXT") or "").strip()
+
+            validate_submit_payload(data, settings=settings, used_uart_paths=used_uart_paths)
             data["log_info"] = build_log_info(data.get("log_path", ""))
             result = manager.submit(data)
         except ValueError as exc:
