@@ -147,6 +147,8 @@ class UartStreamManager:
         self._last_line_seen: dict[tuple[str, str], tuple[str, float]] = {}
         self._writers: dict[tuple[str, str], Any] = {}
         self._writer_locks: dict[tuple[str, str], threading.Lock] = {}
+        self._uart_log_files: dict[tuple[str, str], Any] = {}
+        self._uart_log_locks: dict[tuple[str, str], threading.Lock] = {}
         self._lock = threading.Lock()
 
     def attach_loop(self, loop: asyncio.AbstractEventLoop) -> None:
@@ -177,7 +179,34 @@ class UartStreamManager:
             if tracked is websocket:
                 self._connections_by_client.pop(client_key, None)
 
-    def start_capture(self, job_id: str, uart_paths: list[str]) -> None:
+    @staticmethod
+    def _sanitize_device_name(device: str) -> str:
+        cleaned = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "_" for ch in str(device))
+        return cleaned.strip("_") or "uart"
+
+    @staticmethod
+    def _resolve_log_directory(log_path: str) -> Path:
+        path_text = str(log_path or "").strip()
+        if not path_text:
+            return Path.cwd()
+        source = Path(path_text).expanduser()
+        return source if source.is_dir() else source.parent
+
+    def _write_uart_log(self, job_id: str, device: str, line: str) -> None:
+        key = (str(job_id), str(device))
+        with self._lock:
+            handle = self._uart_log_files.get(key)
+            lock = self._uart_log_locks.get(key)
+        if handle is None or lock is None:
+            return
+        try:
+            with lock:
+                handle.write(f"{line}\n")
+                handle.flush()
+        except Exception:
+            return
+
+    def start_capture(self, job_id: str, jobs_id: str, uart_paths: list[str], log_path: str) -> None:
         unique_paths = sorted({path.strip() for path in uart_paths if path and path.strip()})
         if not unique_paths:
             return
@@ -193,6 +222,14 @@ class UartStreamManager:
             with self._lock:
                 if key in self._threads:
                     continue
+                log_dir = self._resolve_log_directory(log_path)
+                log_dir.mkdir(parents=True, exist_ok=True)
+                safe_device = self._sanitize_device_name(device)
+                safe_jobs_id = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in str(jobs_id or "job"))
+                uart_log_path = log_dir / f"{safe_jobs_id}{safe_device}.log"
+                log_handle = uart_log_path.open("a", encoding="utf-8")
+                self._uart_log_files[key] = log_handle
+                self._uart_log_locks[key] = threading.Lock()
                 stop_event = threading.Event()
                 worker = threading.Thread(target=self._read_serial_worker, args=(job_id, device, stop_event), daemon=True)
                 self._threads[key] = (stop_event, worker)
@@ -205,6 +242,13 @@ class UartStreamManager:
             for key in targets:
                 self._writers.pop(key, None)
                 self._writer_locks.pop(key, None)
+                handle = self._uart_log_files.pop(key, None)
+                self._uart_log_locks.pop(key, None)
+                if handle is not None:
+                    try:
+                        handle.close()
+                    except Exception:
+                        pass
 
         for stop_event, _ in workers:
             stop_event.set()
@@ -217,11 +261,19 @@ class UartStreamManager:
             self._threads.clear()
             self._writers.clear()
             self._writer_locks.clear()
+            handles = list(self._uart_log_files.values())
+            self._uart_log_files.clear()
+            self._uart_log_locks.clear()
 
         for stop_event, _ in workers:
             stop_event.set()
         for _, thread in workers:
             thread.join(timeout=2.0)
+        for handle in handles:
+            try:
+                handle.close()
+            except Exception:
+                pass
 
     def _append_and_broadcast(self, message: dict[str, str]) -> None:
         device = message.get("device", "unknown")
@@ -246,12 +298,14 @@ class UartStreamManager:
                 writer.write(data)
                 writer.flush()
             preview = payload.replace("\r", "\\r").replace("\n", "\\n")
+            ts = datetime.now().isoformat(timespec="seconds")
+            self._write_uart_log(str(job_id), str(device), f"[{ts}] TX> {preview}")
             self._append_and_broadcast({
                 "type": "status",
                 "job_id": str(job_id),
                 "device": str(device),
                 "line": f"[{job_id}] TX> {preview}",
-                "ts": datetime.now().isoformat(timespec="seconds"),
+                "ts": ts,
             })
             return True, "ok"
         except Exception as exc:
@@ -341,13 +395,15 @@ class UartStreamManager:
                     if prev and prev[0] == line and (now_mono - prev[1]) < 0.6:
                         continue
 
+                    ts = datetime.now().isoformat(timespec="seconds")
                     self._append_and_broadcast({
                         "type": "line",
                         "job_id": job_id,
                         "device": device,
                         "line": line,
-                        "ts": datetime.now().isoformat(timespec="seconds"),
+                        "ts": ts,
                     })
+                    self._write_uart_log(job_id, device, f"[{ts}] RX> {line}")
         except Exception as exc:
             self._append_and_broadcast({
                 "type": "status",
@@ -362,6 +418,13 @@ class UartStreamManager:
                 self._last_line_seen.pop((job_id, device), None)
                 self._writers.pop((job_id, device), None)
                 self._writer_locks.pop((job_id, device), None)
+                handle = self._uart_log_files.pop((job_id, device), None)
+                self._uart_log_locks.pop((job_id, device), None)
+                if handle is not None:
+                    try:
+                        handle.close()
+                    except Exception:
+                        pass
             self._append_and_broadcast({
                 "type": "status",
                 "job_id": job_id,
@@ -563,7 +626,9 @@ class JobManager:
                 )
                 job.process = process
                 uart_paths = list((job.payload or {}).get("uart_paths") or [])
-                self._uart_stream.start_capture(job.id, uart_paths)
+                jobs_id = str((job.payload or {}).get("jobs_id") or job.id)
+                log_path = str((job.payload or {}).get("log_path") or "")
+                self._uart_stream.start_capture(job.id, jobs_id, uart_paths, log_path)
                 threading.Thread(target=self._watch_job, args=(job.id, job.run_token), daemon=True).start()
         except Exception as exc:
             with self._lock:
