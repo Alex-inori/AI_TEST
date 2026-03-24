@@ -990,6 +990,8 @@ class JobManager:
 
     @staticmethod
     def _to_api(job: JobRecord) -> dict[str, Any]:
+        payload = dict(job.payload or {})
+        payload["log_info"] = build_log_info(str(payload.get("log_path") or ""))
         return {
             "id": job.id,
             "status": job.status,
@@ -998,7 +1000,7 @@ class JobManager:
             "message": job.message,
             "stop_confirmed": job.stop_confirmed,
             "stop_confirm_time": job.stop_confirm_time,
-            "payload": job.payload,
+            "payload": payload,
         }
 
 
@@ -1029,9 +1031,8 @@ def build_default_log_path(log_root: str, user_id: str, jobs_id: str) -> str:
     if not root:
         return ""
     base = Path(root).expanduser()
-    safe_user = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in str(user_id or "user"))
     safe_job = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in str(jobs_id or "job"))
-    return str(base / f"{safe_user}_{safe_job}")
+    return str(base / safe_job)
 
 
 def build_jobs_id(jobs_id: str, user_id: str = "") -> str:

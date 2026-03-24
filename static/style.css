@@ -37,7 +37,7 @@ h1, h2 { margin: 0 0 12px; }
 .job-card, .recent-card { border: 1px solid #d8dde8; border-radius: 10px; padding: 12px; margin-bottom: 10px; background: #fff; }
 .row-grid {
   display: grid;
-  grid-template-columns: repeat(8, minmax(165px, 1fr)) auto;
+  grid-template-columns: repeat(7, minmax(165px, 1fr)) auto;
   gap: 10px;
   align-items: stretch;
 }
