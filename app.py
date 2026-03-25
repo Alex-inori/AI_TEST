@@ -34,6 +34,9 @@ from pydantic import BaseModel, Field
 APP_ROOT = Path(__file__).resolve().parent
 CFGSHELL_CONFIG_FILE = APP_ROOT / "cfgshell.conf"
 UTILIZATION_LOG_FILE = APP_ROOT / "ultization.log"
+DEFAULT_SERVICE_PORT = 8000
+DEFAULT_CREATE_JOBS_MAX_NUM = 5
+DEFAULT_RECENT_JOBS_MAX_NUM = 10
 REQUIRED_HAPS_SETTINGS = {
     "HAPS_CONFPROSH",
     "HAPS_DB_LOADING_TCL",
@@ -86,6 +89,48 @@ def load_haps_settings() -> dict[str, Any]:
     if missing:
         raise ValueError(f"missing required keys in {CFGSHELL_CONFIG_FILE}: {', '.join(missing)}")
     return settings
+
+
+def load_ui_limits() -> dict[str, int]:
+    service_port = DEFAULT_SERVICE_PORT
+    create_jobs_max_num = DEFAULT_CREATE_JOBS_MAX_NUM
+    recent_jobs_max_num = DEFAULT_RECENT_JOBS_MAX_NUM
+
+    if CFGSHELL_CONFIG_FILE.exists():
+        for raw_line in CFGSHELL_CONFIG_FILE.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or ":" not in line:
+                continue
+            key, raw_value = line.split(":", 1)
+            key = key.strip()
+            value = raw_value.strip()
+            if key == "SERVICE_PORT":
+                try:
+                    parsed = int(value)
+                    if 1 <= parsed <= 65535:
+                        service_port = parsed
+                except ValueError:
+                    pass
+            elif key == "CREATE_JOBS_MAX_NUM":
+                try:
+                    parsed = int(value)
+                    if parsed > 0:
+                        create_jobs_max_num = parsed
+                except ValueError:
+                    pass
+            elif key == "RECENT_JOBS_MAX_NUM":
+                try:
+                    parsed = int(value)
+                    if parsed > 0:
+                        recent_jobs_max_num = parsed
+                except ValueError:
+                    pass
+
+    return {
+        "service_port": service_port,
+        "create_jobs_max_num": create_jobs_max_num,
+        "recent_jobs_max_num": recent_jobs_max_num,
+    }
 
 
 class OpenOcdCfgInput(BaseModel):
@@ -467,10 +512,11 @@ class UartStreamManager:
 
 
 class JobManager:
-    MAX_RECENT_JOBS = 10
     STOP_CONFIRM_REMINDER_MINUTES = 5
     STOP_GRACE_MINUTES = 5
     def __init__(self, uart_stream: UartStreamManager) -> None:
+        limits = load_ui_limits()
+        self.max_recent_jobs = int(limits.get("recent_jobs_max_num", DEFAULT_RECENT_JOBS_MAX_NUM))
         self._jobs: dict[str, JobRecord] = {}
         self._order: list[str] = []
         self._waiting_jobs: dict[str, WaitingJobRecord] = {}
@@ -1167,13 +1213,13 @@ class JobManager:
 
     def _prune_jobs_locked(self) -> None:
         self._order = [job_id for job_id in self._order if job_id in self._jobs]
-        overflow = self._order[self.MAX_RECENT_JOBS :]
+        overflow = self._order[self.max_recent_jobs :]
         if not overflow:
             return
 
         for job_id in overflow:
             self._jobs.pop(job_id, None)
-        del self._order[self.MAX_RECENT_JOBS :]
+        del self._order[self.max_recent_jobs :]
 
 
     def _estimate_waiting_schedule(self, waiting_id: str) -> tuple[datetime | None, JobRecord | None]:
@@ -1570,6 +1616,11 @@ def get_session(request: Request) -> dict[str, str]:
     }
 
 
+@app.get("/api/client-config")
+def get_client_config() -> dict[str, int]:
+    return load_ui_limits()
+
+
 
 
 @app.get("/api/directories")
@@ -1649,6 +1700,10 @@ def get_platform_options() -> dict[str, list[str]]:
 def submit_jobs(payload: SubmitJobsRequest, request: Request) -> dict[str, Any]:
     if not payload.jobs:
         raise HTTPException(status_code=400, detail="jobs cannot be empty")
+    limits = load_ui_limits()
+    create_jobs_max_num = int(limits.get("create_jobs_max_num", DEFAULT_CREATE_JOBS_MAX_NUM))
+    if len(payload.jobs) > create_jobs_max_num:
+        raise HTTPException(status_code=400, detail=f"jobs count cannot exceed {create_jobs_max_num}")
 
     created: list[dict[str, Any]] = []
     system_user = get_system_user_id(request)

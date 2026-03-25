@@ -17,6 +17,26 @@ let uartSocket = null;
 let uartPingTimer = null;
 let uartReconnectTimer = null;
 let hapsPlatforms = [];
+let servicePort = 8000;
+let createJobsMaxNum = 5;
+
+function serviceBaseUrl() {
+  return `http://127.0.0.1:${servicePort}`;
+}
+function wsBaseUrl() {
+  return `ws://127.0.0.1:${servicePort}`;
+}
+function buildApiUrl(path) {
+  return `${serviceBaseUrl()}${path}`;
+}
+function trimOldestCreateJobsIfNeeded(limit = createJobsMaxNum) {
+  const max = Number.parseInt(limit, 10);
+  if (!Number.isFinite(max) || max <= 0) return;
+  const cards = Array.from(newJobsList.querySelectorAll('.job-card'));
+  const overflow = cards.length - max + 1;
+  if (overflow <= 0) return;
+  cards.slice(0, overflow).forEach((card) => card.remove());
+}
 
 function isEditingUartInput() {
   const active = document.activeElement;
@@ -139,9 +159,8 @@ function connectUartSocket() {
     window.clearTimeout(uartReconnectTimer);
     uartReconnectTimer = null;
   }
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const clientId = `${currentUserId || '0'}-${window.location.pathname}`;
-  const socket = new WebSocket(`${protocol}//${window.location.host}/ws/uart?client_id=${encodeURIComponent(clientId)}`);
+  const socket = new WebSocket(`${wsBaseUrl()}/ws/uart?client_id=${encodeURIComponent(clientId)}`);
   uartSocket = socket;
   socket.onopen = () => {
     if (uartSocket !== socket) return;
@@ -412,7 +431,7 @@ function showStopConfirmModal(job) {
   window.addEventListener('scroll', modal.handleViewportChange, true);
   modal.cancelBtn.onclick = () => closeStopConfirmModal();
   modal.okBtn.onclick = async () => {
-    const response = await fetch(`/api/jobs/${jobId}/confirm-stop`, { method: 'POST' });
+    const response = await fetch(buildApiUrl(`/api/jobs/${jobId}/confirm-stop`), { method: 'POST' });
     if (!response.ok) {
       alert(`Confirm Fail: ${await response.text()}`);
       return;
@@ -503,7 +522,7 @@ async function loadFsEntriesWithFallback(path, mode) {
   }
 }
 async function loadFsEntries(path, mode) {
-  const url = `/api/fs?path=${encodeURIComponent(path || '')}&mode=${encodeURIComponent(mode)}`;
+  const url = buildApiUrl(`/api/fs?path=${encodeURIComponent(path || '')}&mode=${encodeURIComponent(mode)}`);
   const response = await fetch(url);
   if (!response.ok) {
     const text = await response.text();
@@ -640,6 +659,7 @@ function normalizeUartPaths(prefill = {}) {
   return [];
 }
 function createNewJobCard(prefill = {}, insertAfterNode = null, options = {}) {
+  trimOldestCreateJobsIfNeeded(createJobsMaxNum);
   const node = template.content.firstElementChild.cloneNode(true);
   const normalizedUartPaths = normalizeUartPaths(prefill);
   node.querySelector('input[name="jobs_id"]').value = options.regenerateJobsId ? makeJobsId() : (prefill.jobs_id || makeJobsId());
@@ -658,7 +678,9 @@ function createNewJobCard(prefill = {}, insertAfterNode = null, options = {}) {
     node.remove();
     if (!newJobsList.children.length) createNewJobCard();
   });
-  node.querySelector('.add-btn').addEventListener('click', () => createNewJobCard({}, node));
+  node.querySelector('.add-btn').addEventListener('click', () => {
+    createNewJobCard({}, node);
+  });
   bindFileSystemBrowse(node, '.browse-btn', '.binfile-path', 'file');
   bindFileSystemBrowse(node, '.img-file-browse-btn', '.img-file-path', 'file');
   bindFileSystemBrowse(node, '.database-browse-btn', '.database-path', 'file');
@@ -763,7 +785,7 @@ async function submitJobs(event) {
     alert(err instanceof Error ? err.message : String(err));
     return;
   }
-  const response = await fetch('/api/jobs', {
+  const response = await fetch(buildApiUrl('/api/jobs'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ jobs }),
@@ -777,14 +799,14 @@ async function submitJobs(event) {
 }
 async function finishJob(jobId) {
   if (!window.confirm('Finish this running job?')) return;
-  const response = await fetch(`/api/jobs/${jobId}/stop`, { method: 'POST' });
+  const response = await fetch(buildApiUrl(`/api/jobs/${jobId}/stop`), { method: 'POST' });
   if (!response.ok) return alert('Finish failed');
   refreshRecentJobs();
   refreshWaitingJobs();
 }
 async function stopAndResubmitJob(jobId) {
   if (!window.confirm('Stop current submit and resubmit this job?')) return;
-  const response = await fetch(`/api/jobs/${jobId}/stop-and-resubmit`, { method: 'POST' });
+  const response = await fetch(buildApiUrl(`/api/jobs/${jobId}/stop-and-resubmit`), { method: 'POST' });
   if (!response.ok) return alert(`Stop and Resubmit failed: ${await response.text()}`);
   refreshRecentJobs();
   refreshWaitingJobs();
@@ -809,7 +831,7 @@ function buildLeftTimeText(job, payload) {
   return { text: `${leftMinutes} min`, isLongtime: false };
 }
 async function cancelWaitingJob(waitingId) {
-  const response = await fetch(`/api/waiting-jobs/${waitingId}?user_id=${encodeURIComponent(currentUserId)}`, { method: 'DELETE' });
+  const response = await fetch(buildApiUrl(`/api/waiting-jobs/${waitingId}?user_id=${encodeURIComponent(currentUserId)}`), { method: 'DELETE' });
   if (!response.ok) return alert(`Cancel failed: ${await response.text()}`);
   refreshWaitingJobs();
 }
@@ -845,7 +867,7 @@ function renderWaitingJobs(jobs) {
   });
 }
 async function refreshWaitingJobs() {
-  const response = await fetch('/api/waiting-jobs');
+  const response = await fetch(buildApiUrl('/api/waiting-jobs'));
   if (!response.ok) return;
   const data = await response.json();
   renderWaitingJobs(data.jobs || []);
@@ -958,7 +980,7 @@ function renderRecentJobs(jobs) {
   });
 }
 async function refreshRecentJobs() {
-  const response = await fetch('/api/jobs');
+  const response = await fetch(buildApiUrl('/api/jobs'));
   if (!response.ok) return;
   const data = await response.json();
   const jobs = data.jobs || [];
@@ -978,7 +1000,17 @@ async function refreshRecentJobs() {
 }
 async function bootstrap() {
   try {
-    const sessionResp = await fetch('/api/session');
+    const cfgResp = await fetch('/api/client-config');
+    if (cfgResp.ok) {
+      const cfg = await cfgResp.json();
+      const parsedPort = Number.parseInt(cfg.service_port, 10);
+      if (Number.isFinite(parsedPort) && parsedPort > 0) servicePort = parsedPort;
+      const parsedCreateMax = Number.parseInt(cfg.create_jobs_max_num, 10);
+      if (Number.isFinite(parsedCreateMax) && parsedCreateMax > 0) createJobsMaxNum = parsedCreateMax;
+    }
+  } catch (_) {}
+  try {
+    const sessionResp = await fetch(buildApiUrl('/api/session'));
     if (sessionResp.ok) {
       const session = await sessionResp.json();
       currentUser = session.user || 'user';
@@ -986,7 +1018,7 @@ async function bootstrap() {
     }
   } catch (_) {}
   try {
-    const platformResp = await fetch('/api/platform-options');
+    const platformResp = await fetch(buildApiUrl('/api/platform-options'));
     if (!platformResp.ok) {
       alert(`Failed to load HAPS platform config: ${await platformResp.text()}`);
       return;
