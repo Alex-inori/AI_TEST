@@ -62,7 +62,7 @@ sudo apt install -y python3 python3-venv python3-pip
 python3 -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip
-pip install fastapi uvicorn pyserial
+pip install fastapi 'uvicorn[standard]' pyserial
 ```
 
 ### 4) 启动服务
