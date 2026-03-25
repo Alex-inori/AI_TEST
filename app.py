@@ -10,6 +10,8 @@ import threading
 import uuid
 import time
 import shlex
+import re
+import select
 
 try:
     import fcntl
@@ -132,6 +134,13 @@ class WaitingJobRecord:
     id: str
     payload: dict[str, Any]
     submit_time: str
+
+
+@dataclass
+class HapsLockSession:
+    process: subprocess.Popen[str]
+    device_id: str
+    handle: str
 
 
 class UartStreamManager:
@@ -463,6 +472,7 @@ class JobManager:
         self._order: list[str] = []
         self._waiting_jobs: dict[str, WaitingJobRecord] = {}
         self._waiting_order: list[str] = []
+        self._haps_lock_sessions: dict[str, HapsLockSession] = {}
         self._lock = threading.Lock()
         self._uart_stream = uart_stream
 
@@ -517,6 +527,117 @@ class JobManager:
         img_file = str(payload.get("img_file") or "").strip()
         return bool(imgload_enabled and imgload_script and img_file)
 
+    @staticmethod
+    def _is_haps100_platform(payload: dict[str, Any]) -> bool:
+        haps_platform = str(payload.get("haps_platform") or "").strip()
+        return "HAPS100" in haps_platform
+
+    @staticmethod
+    def _cfgshell_eval(proc: subprocess.Popen[str], command: str, timeout_seconds: float = 20) -> str:
+        if proc.stdin is None or proc.stdout is None:
+            raise RuntimeError("cfgshell stdin/stdout is unavailable")
+        marker = f"__CFG_DONE_{uuid.uuid4().hex}__"
+        proc.stdin.write(f"{command}\n")
+        proc.stdin.write(f'puts "{marker}"\n')
+        proc.stdin.flush()
+
+        fd = proc.stdout.fileno()
+        deadline = time.monotonic() + max(1.0, timeout_seconds)
+        lines: list[str] = []
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                raise RuntimeError("cfgshell exited unexpectedly")
+            readable, _, _ = select.select([fd], [], [], 0.2)
+            if not readable:
+                continue
+            line = proc.stdout.readline()
+            if line == "":
+                continue
+            text = line.rstrip("\r\n")
+            if text == marker:
+                return "\n".join(lines)
+            lines.append(text)
+        raise TimeoutError(f"cfgshell command timeout: {command}")
+
+    @staticmethod
+    def _extract_haps100_device(cfg_scan_output: str) -> str | None:
+        normalized = " ".join(str(cfg_scan_output or "").split())
+        for match in re.finditer(r"DEVICE\s+(\S+).*?TYPE\s+(\S+).*?STATE\s+(\S+)", normalized):
+            device_id, device_type, state = match.groups()
+            if "HAPS100" in device_type and state.startswith("available"):
+                return device_id
+        return None
+
+    @staticmethod
+    def _extract_cfg_handle(cfg_open_output: str) -> str | None:
+        match = re.search(r"\b(cfg\d+)\b", str(cfg_open_output or ""))
+        return match.group(1) if match else None
+
+    @staticmethod
+    def _write_process_log(log_file: Any, message: str) -> None:
+        if log_file is None:
+            return
+        try:
+            log_file.write(f"{message}\n")
+            log_file.flush()
+        except Exception:
+            return
+
+    def _acquire_haps100_lock(self, job_id: str, cfgshell_cmd: list[str], log_file: Any) -> None:
+        process = subprocess.Popen(
+            cfgshell_cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        try:
+            scan_output = self._cfgshell_eval(process, "cfg_scan")
+            device_id = self._extract_haps100_device(scan_output)
+            if not device_id:
+                raise RuntimeError("no available HAPS100 device from cfg_scan")
+            open_output = self._cfgshell_eval(process, f"cfg_open {device_id}")
+            handle = self._extract_cfg_handle(open_output)
+            if not handle:
+                raise RuntimeError(f"cfg_open failed, output={open_output!r}")
+            lock_scan_output = self._cfgshell_eval(process, "cfg_scan")
+            self._write_process_log(log_file, f"[HAPS_LOCK] job={job_id} device={device_id} handle={handle}")
+            self._write_process_log(log_file, f"[HAPS_LOCK] cfg_scan(after open): {lock_scan_output}")
+            with self._lock:
+                self._haps_lock_sessions[job_id] = HapsLockSession(process=process, device_id=device_id, handle=handle)
+        except Exception:
+            try:
+                process.terminate()
+                process.wait(timeout=3)
+            except Exception:
+                try:
+                    process.kill()
+                    process.wait(timeout=3)
+                except Exception:
+                    pass
+            raise
+
+    def _release_haps_lock_locked(self, job_id: str, log_file: Any = None) -> None:
+        session = self._haps_lock_sessions.pop(job_id, None)
+        if not session:
+            return
+        try:
+            self._cfgshell_eval(session.process, f"cfg_close {session.handle}", timeout_seconds=10)
+            self._write_process_log(log_file, f"[HAPS_LOCK] released job={job_id} handle={session.handle}")
+        except Exception as exc:
+            self._write_process_log(log_file, f"[HAPS_LOCK] release failed job={job_id}: {exc}")
+        finally:
+            try:
+                session.process.terminate()
+                session.process.wait(timeout=3)
+            except Exception:
+                try:
+                    session.process.kill()
+                    session.process.wait(timeout=3)
+                except Exception:
+                    pass
+
     def _job_is_current_locked(self, job_id: str, run_token: int) -> bool:
         job = self._jobs.get(job_id)
         return bool(job and job.run_token == run_token and self._is_running_status(job.status))
@@ -540,6 +661,8 @@ class JobManager:
         log_file = None
         try:
             log_path = str(payload.get("log_path") or "").strip()
+            lock_settings: dict[str, Any] | None = None
+            lock_cfgshell_cmd: list[str] | None = None
             if log_path:
                 log_dir = Path(log_path).expanduser()
                 log_dir.mkdir(parents=True, exist_ok=True)
@@ -548,9 +671,14 @@ class JobManager:
                 process_log_path = log_dir / f"{safe_jobs_id}.log"
                 log_file = process_log_path.open("a", encoding="utf-8")
 
+            if self._is_haps100_platform(payload):
+                lock_settings = self._read_haps_settings()
+                lock_cfgshell_cmd = list(lock_settings.get("HAPS_CONFPROSH_CMD") or [])
+                self._acquire_haps100_lock(job_id, lock_cfgshell_cmd, log_file)
+
             if self._should_run_prepare(payload):
-                settings = self._read_haps_settings()
-                cfgshell_cmd = list(settings.get("HAPS_CONFPROSH_CMD") or [])
+                settings = lock_settings or self._read_haps_settings()
+                cfgshell_cmd = lock_cfgshell_cmd or list(settings.get("HAPS_CONFPROSH_CMD") or [])
                 db_load_script = str(settings.get("HAPS_DB_LOADING_TCL") or "").strip()
                 database_path = str(payload.get("database_path") or "").strip()
                 reset_script = str(payload.get("reset_script") or "").strip()
@@ -570,6 +698,7 @@ class JobManager:
                 if rc1 != 0:
                     with self._lock:
                         if self._job_is_current_locked(job_id, run_token):
+                            self._release_haps_lock_locked(job_id, log_file=log_file)
                             self._jobs[job_id].status = "Failed"
                             self._jobs[job_id].end_time = datetime.now().isoformat(timespec="seconds")
                             self._jobs[job_id].message = f"HAPS_DB load failed (exit={rc1})"
@@ -590,6 +719,7 @@ class JobManager:
                     if rc_img != 0:
                         with self._lock:
                             if self._job_is_current_locked(job_id, run_token):
+                                self._release_haps_lock_locked(job_id, log_file=log_file)
                                 self._jobs[job_id].status = "Failed"
                                 self._jobs[job_id].end_time = datetime.now().isoformat(timespec="seconds")
                                 self._jobs[job_id].message = f"SW_IMG load failed (exit={rc_img})"
@@ -610,6 +740,7 @@ class JobManager:
                 if rc2 != 0:
                     with self._lock:
                         if self._job_is_current_locked(job_id, run_token):
+                            self._release_haps_lock_locked(job_id, log_file=log_file)
                             self._jobs[job_id].status = "Failed"
                             self._jobs[job_id].end_time = datetime.now().isoformat(timespec="seconds")
                             self._jobs[job_id].message = f"HAPS_ENV reset failed (exit={rc2})"
@@ -637,6 +768,7 @@ class JobManager:
         except Exception as exc:
             with self._lock:
                 if self._job_is_current_locked(job_id, run_token):
+                    self._release_haps_lock_locked(job_id, log_file=log_file)
                     self._jobs[job_id].status = "Failed"
                     self._jobs[job_id].end_time = datetime.now().isoformat(timespec="seconds")
                     self._jobs[job_id].message = f"db/reset prepare failed: {exc}"
@@ -754,6 +886,7 @@ class JobManager:
             if not current or current.run_token != run_token:
                 return
             self._uart_stream.stop_capture(job_id)
+            self._release_haps_lock_locked(job_id)
             # If timeout/manual handlers already finalized this job, preserve that status.
             if not self._is_running_status(current.status):
                 return
@@ -787,6 +920,7 @@ class JobManager:
         with self._lock:
             job = self._jobs[job_id]
             self._uart_stream.stop_capture(job_id)
+            self._release_haps_lock_locked(job_id)
             job.run_token += 1
             job.process = None
             job.status = "Finish"
@@ -834,6 +968,7 @@ class JobManager:
                     raise ValueError("remaining execution time is less than 5 minutes, stop and resubmit is not allowed")
             process = job.process
             self._uart_stream.stop_all_capture()
+            self._release_haps_lock_locked(job_id)
             # Immediately invalidate old watcher callbacks to guarantee resubmit priority
             # over waiting queue promotion while old process exits.
             job.run_token += 1
@@ -875,6 +1010,7 @@ class JobManager:
                 process.kill()
                 process.wait(timeout=5)
         self._uart_stream.stop_capture(job.id)
+        self._release_haps_lock_locked(job.id)
         job.run_token += 1
         job.process = None
         job.status = "Finish"
