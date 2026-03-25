@@ -576,6 +576,17 @@ class JobManager:
         return fallback_device
 
     @staticmethod
+    def _summarize_cfg_scan_states(cfg_scan_output: str) -> str:
+        normalized = " ".join(str(cfg_scan_output or "").split())
+        details: list[str] = []
+        for match in re.finditer(r"DEVICE\s+(\S+).*?TYPE\s+(\S+).*?STATE\s+(\S+)", normalized):
+            device_id, device_type, state = match.groups()
+            details.append(f"{device_id}|{device_type}|{state}")
+        if details:
+            return "; ".join(details)
+        return normalized[:300] if normalized else "empty cfg_scan output"
+
+    @staticmethod
     def _extract_cfg_handle(cfg_open_output: str) -> str | None:
         match = re.search(r"\b(cfg\d+)\b", str(cfg_open_output or ""))
         return match.group(1) if match else None
@@ -603,7 +614,8 @@ class JobManager:
             scan_output = self._cfgshell_eval(process, "cfg_scan")
             device_id = self._extract_available_device(scan_output, payload)
             if not device_id:
-                raise RuntimeError("no available device from cfg_scan")
+                state_info = self._summarize_cfg_scan_states(scan_output)
+                raise RuntimeError(f"no available device from cfg_scan: {state_info}")
             open_output = self._cfgshell_eval(process, f"cfg_open {device_id}")
             handle = self._extract_cfg_handle(open_output)
             if not handle:
