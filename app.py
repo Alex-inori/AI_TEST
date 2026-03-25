@@ -13,6 +13,7 @@ import shlex
 import re
 import select
 import pty
+import zlib
 
 try:
     import fcntl
@@ -522,6 +523,7 @@ class JobManager:
         self._waiting_jobs: dict[str, WaitingJobRecord] = {}
         self._waiting_order: list[str] = []
         self._haps_lock_sessions: dict[str, HapsLockSession] = {}
+        self._img_dedup_signatures: set[str] = set()
         self._lock = threading.Lock()
         self._uart_stream = uart_stream
 
@@ -689,6 +691,22 @@ class JobManager:
         except Exception:
             return
 
+    @staticmethod
+    def _calculate_img_dedup_signature(file_path: str) -> tuple[str, str]:
+        sample_bytes = 4 * 1024 * 1024
+        file_size = os.path.getsize(file_path)
+        with open(file_path, "rb") as handle:
+            head = handle.read(sample_bytes)
+            tail = b""
+            if file_size > sample_bytes:
+                handle.seek(max(0, file_size - sample_bytes))
+                tail = handle.read(sample_bytes)
+        head_crc = zlib.crc32(head) & 0xFFFFFFFF
+        tail_crc = zlib.crc32(tail) & 0xFFFFFFFF
+        algo = "size+crc32(head4MB,tail4MB)"
+        signature = f"{file_size:016x}-{head_crc:08x}-{tail_crc:08x}"
+        return algo, signature
+
     def _acquire_device_lock(self, job_id: str, payload: dict[str, Any], cfgshell_cmd: list[str], log_file: Any) -> None:
         master_fd, slave_fd = pty.openpty()
         process = subprocess.Popen(
@@ -830,7 +848,34 @@ class JobManager:
                             return
                         self._jobs[job_id].status = "Running::Loading SW_IMG"
 
+                    dedup_result: dict[str, str] = {}
+                    dedup_error: dict[str, str] = {}
+
+                    def _collect_img_signature() -> None:
+                        try:
+                            algo, signature = self._calculate_img_dedup_signature(img_file)
+                            dedup_result["algo"] = algo
+                            dedup_result["signature"] = signature
+                        except Exception as exc:
+                            dedup_error["value"] = str(exc)
+
+                    dedup_thread = threading.Thread(target=_collect_img_signature, daemon=True)
+                    dedup_thread.start()
                     rc_img = subprocess.run([*cfgshell_cmd, imgload_script, img_file], stdout=log_file, stderr=log_file, text=True).returncode
+                    dedup_thread.join()
+                    if "signature" in dedup_result:
+                        signature = dedup_result["signature"]
+                        with self._lock:
+                            duplicate = signature in self._img_dedup_signatures
+                            if not duplicate:
+                                self._img_dedup_signatures.add(signature)
+                        dedup_state = "remain unchanged" if duplicate else "new"
+                        self._write_process_log(
+                            log_file,
+                            f"[HAPS_LOCK] {img_file} is {dedup_state}",
+                        )
+                    elif "value" in dedup_error:
+                        self._write_process_log(log_file, f"[HAPS_LOCK] SW_IMG_CHECK failed: {dedup_error['value']}")
                     if rc_img != 0:
                         self._write_process_log(log_file, f"[HAPS_LOCK] SW_IMG load failed, exit={rc_img}")
                         with self._lock:
