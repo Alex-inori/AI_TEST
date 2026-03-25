@@ -632,13 +632,11 @@ class JobManager:
         os.close(slave_fd)
         try:
             scan_output = self._cfgshell_eval(process, master_fd, "cfg_scan")
-            self._write_process_log(log_file, f"[HAPS_LOCK] cfg_scan(raw): {scan_output}")
             device_id = self._extract_available_device(scan_output, payload)
             if not device_id:
                 state_info = self._summarize_cfg_scan_states(scan_output)
                 raise RuntimeError(f"no available device from cfg_scan: {state_info}")
             open_output = self._cfgshell_eval(process, master_fd, f"cfg_open {device_id}")
-            self._write_process_log(log_file, f"[HAPS_LOCK] cfg_open(raw): {open_output}")
             handle = self._extract_cfg_handle(open_output)
             if not handle:
                 raise RuntimeError(f"cfg_open failed, output={open_output!r}")
