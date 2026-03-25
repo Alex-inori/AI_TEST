@@ -120,3 +120,9 @@ pip install fastapi uvicorn pyserial
 - `GET /api/jobs`：查询 recent jobs
 - `POST /api/jobs/{job_id}/stop`：停止运行中的 job
 - `WS /ws/uart`：UART 实时流（按 Job + 设备输出）
+
+## cfgshell.conf 可选配置
+
+- `SERVICE_PORT`：前端请求后端服务端口。未配置时默认使用 `127.0.0.1:8000`。
+- `CREATE_JOBS_MAX_NUM`：New Jobs 页面允许创建/提交的最大 Job 数量。未配置时默认 `5`。
+- `RECENT_JOBS_MAX_NUM`：Recent Jobs 最多保留显示条数。未配置时默认 `10`。
