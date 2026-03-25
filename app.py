@@ -539,9 +539,8 @@ class JobManager:
             raise RuntimeError("cfgshell stdin/stdout is unavailable")
         marker_begin = f"__CFG_BEGIN_{uuid.uuid4().hex}__"
         marker_end = f"__CFG_END_{uuid.uuid4().hex}__"
-        proc.stdin.write(f"set __codex_rc [catch {{{command}}} __codex_out]\n")
         proc.stdin.write(f'puts "{marker_begin}"\n')
-        proc.stdin.write("puts $__codex_rc\n")
+        proc.stdin.write(f"set __codex_out [{command}]\n")
         proc.stdin.write("puts $__codex_out\n")
         proc.stdin.write(f'puts "{marker_end}"\n')
         proc.stdin.flush()
@@ -567,16 +566,7 @@ class JobManager:
                 payload_lines = []
                 continue
             if text == marker_end and in_payload:
-                rc = 1
-                cmd_output = ""
-                if payload_lines:
-                    try:
-                        rc = int(payload_lines[0].strip())
-                    except ValueError:
-                        rc = 1
-                    cmd_output = "\n".join(payload_lines[1:]).strip()
-                if rc != 0:
-                    raise RuntimeError(f"cfgshell command failed: {command}; output={cmd_output}")
+                cmd_output = "\n".join(payload_lines).strip()
                 return cmd_output
             if in_payload:
                 payload_lines.append(text)
