@@ -537,42 +537,42 @@ class JobManager:
     def _cfgshell_eval(proc: subprocess.Popen[str], command: str, timeout_seconds: float = 20) -> str:
         if proc.stdin is None or proc.stdout is None:
             raise RuntimeError("cfgshell stdin/stdout is unavailable")
-        marker_begin = f"__CFG_BEGIN_{uuid.uuid4().hex}__"
-        marker_end = f"__CFG_END_{uuid.uuid4().hex}__"
-        proc.stdin.write(f'puts "{marker_begin}"\n')
-        proc.stdin.write(f"set __codex_out [{command}]\n")
-        proc.stdin.write("puts $__codex_out\n")
-        proc.stdin.write(f'puts "{marker_end}"\n')
+        fd = proc.stdout.fileno()
+
+        # Drain possible banner/help text printed when entering cfgshell.
+        for _ in range(8):
+            readable, _, _ = select.select([fd], [], [], 0.05)
+            if not readable:
+                break
+            drained = proc.stdout.readline()
+            if drained == "":
+                break
+
+        proc.stdin.write(f"{command}\n")
         proc.stdin.flush()
 
-        fd = proc.stdout.fileno()
         deadline = time.monotonic() + max(1.0, timeout_seconds)
-        payload_lines: list[str] = []
-        in_payload = False
-        seen_begin = False
+        lines: list[str] = []
+        last_output_at = time.monotonic()
         while time.monotonic() < deadline:
-            if proc.poll() is not None:
+            if proc.poll() is not None and not lines:
                 raise RuntimeError("cfgshell exited unexpectedly")
             readable, _, _ = select.select([fd], [], [], 0.2)
             if not readable:
+                if lines and (time.monotonic() - last_output_at) >= 0.35:
+                    break
                 continue
             line = proc.stdout.readline()
             if line == "":
                 continue
             text = line.rstrip("\r\n")
-            if text == marker_begin:
-                in_payload = True
-                seen_begin = True
-                payload_lines = []
+            if text.strip() == str(command).strip():
                 continue
-            if text == marker_end and in_payload:
-                cmd_output = "\n".join(payload_lines).strip()
-                return cmd_output
-            if in_payload:
-                payload_lines.append(text)
-        if seen_begin:
-            raise RuntimeError(f"cfgshell command missing end marker: {command}")
-        raise TimeoutError(f"cfgshell command timeout: {command}")
+            lines.append(text)
+            last_output_at = time.monotonic()
+        if not lines:
+            raise TimeoutError(f"cfgshell command timeout: {command}")
+        return "\n".join(lines).strip()
 
     @staticmethod
     def _extract_available_device(cfg_scan_output: str, payload: dict[str, Any]) -> str | None:
