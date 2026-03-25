@@ -528,9 +528,10 @@ class JobManager:
         return bool(imgload_enabled and imgload_script and img_file)
 
     @staticmethod
-    def _is_haps100_platform(payload: dict[str, Any]) -> bool:
-        haps_platform = str(payload.get("haps_platform") or "").strip()
-        return "HAPS100" in haps_platform
+    def _extract_platform_family(payload: dict[str, Any]) -> str:
+        haps_platform = str(payload.get("haps_platform") or "").upper()
+        match = re.search(r"(HAPS\d+)", haps_platform)
+        return match.group(1) if match else ""
 
     @staticmethod
     def _cfgshell_eval(proc: subprocess.Popen[str], command: str, timeout_seconds: float = 20) -> str:
@@ -560,13 +561,19 @@ class JobManager:
         raise TimeoutError(f"cfgshell command timeout: {command}")
 
     @staticmethod
-    def _extract_haps100_device(cfg_scan_output: str) -> str | None:
+    def _extract_available_device(cfg_scan_output: str, payload: dict[str, Any]) -> str | None:
         normalized = " ".join(str(cfg_scan_output or "").split())
+        preferred_family = JobManager._extract_platform_family(payload)
+        fallback_device: str | None = None
         for match in re.finditer(r"DEVICE\s+(\S+).*?TYPE\s+(\S+).*?STATE\s+(\S+)", normalized):
             device_id, device_type, state = match.groups()
-            if "HAPS100" in device_type and state.startswith("available"):
+            if not state.startswith("available"):
+                continue
+            if fallback_device is None:
+                fallback_device = device_id
+            if preferred_family and preferred_family in device_type.upper():
                 return device_id
-        return None
+        return fallback_device
 
     @staticmethod
     def _extract_cfg_handle(cfg_open_output: str) -> str | None:
@@ -583,7 +590,7 @@ class JobManager:
         except Exception:
             return
 
-    def _acquire_haps100_lock(self, job_id: str, cfgshell_cmd: list[str], log_file: Any) -> None:
+    def _acquire_device_lock(self, job_id: str, payload: dict[str, Any], cfgshell_cmd: list[str], log_file: Any) -> None:
         process = subprocess.Popen(
             cfgshell_cmd,
             stdin=subprocess.PIPE,
@@ -594,15 +601,15 @@ class JobManager:
         )
         try:
             scan_output = self._cfgshell_eval(process, "cfg_scan")
-            device_id = self._extract_haps100_device(scan_output)
+            device_id = self._extract_available_device(scan_output, payload)
             if not device_id:
-                raise RuntimeError("no available HAPS100 device from cfg_scan")
+                raise RuntimeError("no available device from cfg_scan")
             open_output = self._cfgshell_eval(process, f"cfg_open {device_id}")
             handle = self._extract_cfg_handle(open_output)
             if not handle:
                 raise RuntimeError(f"cfg_open failed, output={open_output!r}")
             lock_scan_output = self._cfgshell_eval(process, "cfg_scan")
-            self._write_process_log(log_file, f"[HAPS_LOCK] job={job_id} device={device_id} handle={handle}")
+            self._write_process_log(log_file, f"[HAPS_LOCK] job={job_id} platform={payload.get('haps_platform')} device={device_id} handle={handle}")
             self._write_process_log(log_file, f"[HAPS_LOCK] cfg_scan(after open): {lock_scan_output}")
             with self._lock:
                 self._haps_lock_sessions[job_id] = HapsLockSession(process=process, device_id=device_id, handle=handle)
@@ -671,10 +678,9 @@ class JobManager:
                 process_log_path = log_dir / f"{safe_jobs_id}.log"
                 log_file = process_log_path.open("a", encoding="utf-8")
 
-            if self._is_haps100_platform(payload):
-                lock_settings = self._read_haps_settings()
-                lock_cfgshell_cmd = list(lock_settings.get("HAPS_CONFPROSH_CMD") or [])
-                self._acquire_haps100_lock(job_id, lock_cfgshell_cmd, log_file)
+            lock_settings = self._read_haps_settings()
+            lock_cfgshell_cmd = list(lock_settings.get("HAPS_CONFPROSH_CMD") or [])
+            self._acquire_device_lock(job_id, payload, lock_cfgshell_cmd, log_file)
 
             if self._should_run_prepare(payload):
                 settings = lock_settings or self._read_haps_settings()
