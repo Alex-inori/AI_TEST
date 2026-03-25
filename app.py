@@ -728,6 +728,7 @@ class JobManager:
             payload = dict(job.payload or {})
 
         log_file = None
+        lock_acquired = False
         try:
             log_path = str(payload.get("log_path") or "").strip()
             lock_settings: dict[str, Any] | None = None
@@ -742,7 +743,6 @@ class JobManager:
 
             lock_settings = self._read_haps_settings()
             lock_cfgshell_cmd = list(lock_settings.get("HAPS_CONFPROSH_CMD") or [])
-            self._acquire_device_lock(job_id, payload, lock_cfgshell_cmd, log_file)
 
             if self._should_run_prepare(payload):
                 settings = lock_settings or self._read_haps_settings()
@@ -767,7 +767,6 @@ class JobManager:
                     self._write_process_log(log_file, f"[HAPS_LOCK] HAPS_DB load failed, exit={rc1}")
                     with self._lock:
                         if self._job_is_current_locked(job_id, run_token):
-                            self._release_haps_lock_locked(job_id, log_file=log_file)
                             self._jobs[job_id].status = "Failed"
                             self._jobs[job_id].end_time = datetime.now().isoformat(timespec="seconds")
                             self._jobs[job_id].message = f"HAPS_DB load failed (exit={rc1})"
@@ -790,7 +789,6 @@ class JobManager:
                         self._write_process_log(log_file, f"[HAPS_LOCK] SW_IMG load failed, exit={rc_img}")
                         with self._lock:
                             if self._job_is_current_locked(job_id, run_token):
-                                self._release_haps_lock_locked(job_id, log_file=log_file)
                                 self._jobs[job_id].status = "Failed"
                                 self._jobs[job_id].end_time = datetime.now().isoformat(timespec="seconds")
                                 self._jobs[job_id].message = f"SW_IMG load failed (exit={rc_img})"
@@ -813,7 +811,6 @@ class JobManager:
                     self._write_process_log(log_file, f"[HAPS_LOCK] HAPS_ENV reset failed, exit={rc2}")
                     with self._lock:
                         if self._job_is_current_locked(job_id, run_token):
-                            self._release_haps_lock_locked(job_id, log_file=log_file)
                             self._jobs[job_id].status = "Failed"
                             self._jobs[job_id].end_time = datetime.now().isoformat(timespec="seconds")
                             self._jobs[job_id].message = f"HAPS_ENV reset failed (exit={rc2})"
@@ -826,6 +823,18 @@ class JobManager:
                     return
                 job = self._jobs[job_id]
                 job.status = "Running::HAPS_RDY"
+
+            # cfgshell 不支持并行启动：先完成 prepare，再在 HAPS_RDY 阶段进行设备 lock。
+            cfgshell_cmd_for_lock = lock_cfgshell_cmd or []
+            self._acquire_device_lock(job_id, payload, cfgshell_cmd_for_lock, log_file)
+            lock_acquired = True
+
+            with self._lock:
+                if not self._job_is_current_locked(job_id, run_token):
+                    self._release_haps_lock_locked(job_id, log_file=log_file)
+                    lock_acquired = False
+                    return
+                job = self._jobs[job_id]
                 command = self._build_job_command(job.payload)
                 process = subprocess.Popen(
                     ["bash", "-lc", command],
@@ -844,12 +853,17 @@ class JobManager:
             with self._lock:
                 if self._job_is_current_locked(job_id, run_token):
                     self._release_haps_lock_locked(job_id, log_file=log_file)
+                    lock_acquired = False
                     self._jobs[job_id].status = "Failed"
                     self._jobs[job_id].end_time = datetime.now().isoformat(timespec="seconds")
                     self._jobs[job_id].message = f"db/reset prepare failed: {exc}"
                     self._append_utilization_log(self._jobs[job_id])
                     self._promote_waiting_locked()
         finally:
+            if lock_acquired:
+                with self._lock:
+                    if not self._job_is_current_locked(job_id, run_token):
+                        self._release_haps_lock_locked(job_id, log_file=log_file)
             if log_file is not None:
                 try:
                     log_file.flush()
