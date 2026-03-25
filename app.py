@@ -33,6 +33,7 @@ from pydantic import BaseModel, Field
 
 APP_ROOT = Path(__file__).resolve().parent
 CFGSHELL_CONFIG_FILE = APP_ROOT / "cfgshell.conf"
+UTILIZATION_LOG_FILE = APP_ROOT / "ultization.log"
 REQUIRED_HAPS_SETTINGS = {
     "HAPS_CONFPROSH",
     "HAPS_DB_LOADING_TCL",
@@ -478,6 +479,27 @@ class JobManager:
         self._lock = threading.Lock()
         self._uart_stream = uart_stream
 
+    @staticmethod
+    def _compute_duration_seconds(submit_time: str, end_time: str) -> int:
+        try:
+            submit_at = datetime.fromisoformat(str(submit_time))
+            ended_at = datetime.fromisoformat(str(end_time))
+            return max(0, int((ended_at - submit_at).total_seconds()))
+        except (TypeError, ValueError):
+            return 0
+
+    def _append_utilization_log(self, job: JobRecord) -> None:
+        jobs_id = str((job.payload or {}).get("jobs_id") or job.id)
+        end_time = str(job.end_time or datetime.now().isoformat(timespec="seconds"))
+        duration_seconds = self._compute_duration_seconds(job.submit_time, end_time)
+        line = f"JobsID={jobs_id}, Duration={duration_seconds}s, EndTime={end_time}"
+        try:
+            UTILIZATION_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with UTILIZATION_LOG_FILE.open("a", encoding="utf-8") as f:
+                f.write(f"{line}\n")
+        except Exception:
+            return
+
     def _start_job(self, payload: dict[str, Any]) -> JobRecord:
         now = datetime.now().isoformat(timespec="seconds")
         initial_status = "Running::Loading HAPS_DB" if self._should_run_prepare(payload) else "Running::HAPS_RDY"
@@ -749,6 +771,7 @@ class JobManager:
                             self._jobs[job_id].status = "Failed"
                             self._jobs[job_id].end_time = datetime.now().isoformat(timespec="seconds")
                             self._jobs[job_id].message = f"HAPS_DB load failed (exit={rc1})"
+                            self._append_utilization_log(self._jobs[job_id])
                             self._promote_waiting_locked()
                     return
 
@@ -771,6 +794,7 @@ class JobManager:
                                 self._jobs[job_id].status = "Failed"
                                 self._jobs[job_id].end_time = datetime.now().isoformat(timespec="seconds")
                                 self._jobs[job_id].message = f"SW_IMG load failed (exit={rc_img})"
+                                self._append_utilization_log(self._jobs[job_id])
                                 self._promote_waiting_locked()
                         return
                     ran_imgload = True
@@ -793,6 +817,7 @@ class JobManager:
                             self._jobs[job_id].status = "Failed"
                             self._jobs[job_id].end_time = datetime.now().isoformat(timespec="seconds")
                             self._jobs[job_id].message = f"HAPS_ENV reset failed (exit={rc2})"
+                            self._append_utilization_log(self._jobs[job_id])
                             self._promote_waiting_locked()
                     return
 
@@ -822,6 +847,7 @@ class JobManager:
                     self._jobs[job_id].status = "Failed"
                     self._jobs[job_id].end_time = datetime.now().isoformat(timespec="seconds")
                     self._jobs[job_id].message = f"db/reset prepare failed: {exc}"
+                    self._append_utilization_log(self._jobs[job_id])
                     self._promote_waiting_locked()
         finally:
             if log_file is not None:
@@ -951,10 +977,12 @@ class JobManager:
             if rc == 0:
                 current.status = "Finish"
                 current.message = "job finished"
+                self._append_utilization_log(current)
                 self._promote_waiting_locked()
             else:
                 current.status = "Failed"
                 current.message = f"job failed (exit={rc})"
+                self._append_utilization_log(current)
                 self._promote_waiting_locked()
 
     def stop(self, job_id: str) -> JobRecord:
@@ -983,6 +1011,7 @@ class JobManager:
             job.status = "Finish"
             job.end_time = datetime.now().isoformat(timespec="seconds")
             job.message = "job manually finished"
+            self._append_utilization_log(job)
             self._promote_waiting_locked()
             return job
 
@@ -1073,6 +1102,7 @@ class JobManager:
         job.status = "Finish"
         job.end_time = datetime.now().isoformat(timespec="seconds")
         job.message = message
+        self._append_utilization_log(job)
 
     def _apply_timeouts_locked(self) -> None:
         now = datetime.now()
