@@ -12,6 +12,7 @@ import time
 import shlex
 import re
 import select
+import pty
 
 try:
     import fcntl
@@ -141,6 +142,7 @@ class HapsLockSession:
     process: subprocess.Popen[str]
     device_id: str
     handle: str
+    io_fd: int
 
 
 class UartStreamManager:
@@ -534,10 +536,8 @@ class JobManager:
         return match.group(1) if match else ""
 
     @staticmethod
-    def _cfgshell_eval(proc: subprocess.Popen[str], command: str, timeout_seconds: float = 20) -> str:
-        if proc.stdin is None or proc.stdout is None:
-            raise RuntimeError("cfgshell stdin/stdout is unavailable")
-        fd = proc.stdout.fileno()
+    def _cfgshell_eval(proc: subprocess.Popen[str], io_fd: int, command: str, timeout_seconds: float = 20) -> str:
+        fd = io_fd
 
         # Drain possible banner/help text printed when entering cfgshell.
         for _ in range(8):
@@ -548,8 +548,7 @@ class JobManager:
             if not drained:
                 break
 
-        proc.stdin.write(f"{command}\n")
-        proc.stdin.flush()
+        os.write(fd, f"{command}\n".encode("utf-8"))
 
         deadline = time.monotonic() + max(1.0, timeout_seconds)
         raw_chunks: list[str] = []
@@ -623,31 +622,31 @@ class JobManager:
             return
 
     def _acquire_device_lock(self, job_id: str, payload: dict[str, Any], cfgshell_cmd: list[str], log_file: Any) -> None:
+        master_fd, slave_fd = pty.openpty()
         process = subprocess.Popen(
             cfgshell_cmd,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
         )
+        os.close(slave_fd)
         try:
-            scan_output = self._cfgshell_eval(process, "cfg_scan")
+            scan_output = self._cfgshell_eval(process, master_fd, "cfg_scan")
             self._write_process_log(log_file, f"[HAPS_LOCK] cfg_scan(raw): {scan_output}")
             device_id = self._extract_available_device(scan_output, payload)
             if not device_id:
                 state_info = self._summarize_cfg_scan_states(scan_output)
                 raise RuntimeError(f"no available device from cfg_scan: {state_info}")
-            open_output = self._cfgshell_eval(process, f"cfg_open {device_id}")
+            open_output = self._cfgshell_eval(process, master_fd, f"cfg_open {device_id}")
             self._write_process_log(log_file, f"[HAPS_LOCK] cfg_open(raw): {open_output}")
             handle = self._extract_cfg_handle(open_output)
             if not handle:
                 raise RuntimeError(f"cfg_open failed, output={open_output!r}")
-            lock_scan_output = self._cfgshell_eval(process, "cfg_scan")
+            lock_scan_output = self._cfgshell_eval(process, master_fd, "cfg_scan")
             self._write_process_log(log_file, f"[HAPS_LOCK] job={job_id} platform={payload.get('haps_platform')} device={device_id} handle={handle}")
             self._write_process_log(log_file, f"[HAPS_LOCK] cfg_scan(after open): {lock_scan_output}")
             with self._lock:
-                self._haps_lock_sessions[job_id] = HapsLockSession(process=process, device_id=device_id, handle=handle)
+                self._haps_lock_sessions[job_id] = HapsLockSession(process=process, device_id=device_id, handle=handle, io_fd=master_fd)
         except Exception:
             try:
                 process.terminate()
@@ -658,6 +657,10 @@ class JobManager:
                     process.wait(timeout=3)
                 except Exception:
                     pass
+            try:
+                os.close(master_fd)
+            except Exception:
+                pass
             raise
 
     def _release_haps_lock_locked(self, job_id: str, log_file: Any = None) -> None:
@@ -665,11 +668,15 @@ class JobManager:
         if not session:
             return
         try:
-            self._cfgshell_eval(session.process, f"cfg_close {session.handle}", timeout_seconds=10)
+            self._cfgshell_eval(session.process, session.io_fd, f"cfg_close {session.handle}", timeout_seconds=10)
             self._write_process_log(log_file, f"[HAPS_LOCK] released job={job_id} handle={session.handle}")
         except Exception as exc:
             self._write_process_log(log_file, f"[HAPS_LOCK] release failed job={job_id}: {exc}")
         finally:
+            try:
+                os.close(session.io_fd)
+            except Exception:
+                pass
             try:
                 session.process.terminate()
                 session.process.wait(timeout=3)
