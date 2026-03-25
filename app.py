@@ -714,6 +714,7 @@ class JobManager:
                     db_load_cmd.append(hmf_txt)
                 rc1 = subprocess.run(db_load_cmd, stdout=log_file, stderr=log_file, text=True).returncode
                 if rc1 != 0:
+                    self._write_process_log(log_file, f"[HAPS_LOCK] HAPS_DB load failed, exit={rc1}")
                     with self._lock:
                         if self._job_is_current_locked(job_id, run_token):
                             self._release_haps_lock_locked(job_id, log_file=log_file)
@@ -735,6 +736,7 @@ class JobManager:
 
                     rc_img = subprocess.run([*cfgshell_cmd, imgload_script, img_file], stdout=log_file, stderr=log_file, text=True).returncode
                     if rc_img != 0:
+                        self._write_process_log(log_file, f"[HAPS_LOCK] SW_IMG load failed, exit={rc_img}")
                         with self._lock:
                             if self._job_is_current_locked(job_id, run_token):
                                 self._release_haps_lock_locked(job_id, log_file=log_file)
@@ -756,6 +758,7 @@ class JobManager:
 
                 rc2 = subprocess.run([*cfgshell_cmd, reset_script], stdout=log_file, stderr=log_file, text=True).returncode
                 if rc2 != 0:
+                    self._write_process_log(log_file, f"[HAPS_LOCK] HAPS_ENV reset failed, exit={rc2}")
                     with self._lock:
                         if self._job_is_current_locked(job_id, run_token):
                             self._release_haps_lock_locked(job_id, log_file=log_file)
@@ -784,6 +787,7 @@ class JobManager:
                 self._uart_stream.start_capture(job.id, jobs_id, uart_paths, log_path)
                 threading.Thread(target=self._watch_job, args=(job.id, job.run_token), daemon=True).start()
         except Exception as exc:
+            self._write_process_log(log_file, f"[HAPS_LOCK] prepare exception: {exc}")
             with self._lock:
                 if self._job_is_current_locked(job_id, run_token):
                     self._release_haps_lock_locked(job_id, log_file=log_file)
@@ -791,6 +795,13 @@ class JobManager:
                     self._jobs[job_id].end_time = datetime.now().isoformat(timespec="seconds")
                     self._jobs[job_id].message = f"db/reset prepare failed: {exc}"
                     self._promote_waiting_locked()
+        finally:
+            if log_file is not None:
+                try:
+                    log_file.flush()
+                    log_file.close()
+                except Exception:
+                    pass
 
 
     @staticmethod
