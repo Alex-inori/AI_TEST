@@ -44,6 +44,9 @@ h1, h2 { margin: 0 0 12px; }
 .recent-card.row-grid {
   grid-template-columns: minmax(150px, 1.2fr) minmax(140px, 1fr) minmax(150px, 1fr) minmax(95px, 0.55fr) minmax(105px, 0.65fr) minmax(300px, 2fr) auto;
 }
+.recent-card.row-grid.no-lefttime {
+  grid-template-columns: minmax(150px, 1.2fr) minmax(140px, 1fr) minmax(150px, 1fr) minmax(105px, 0.65fr) minmax(420px, 2.55fr) auto;
+}
 .waiting-card.row-grid {
   grid-template-columns: repeat(4, minmax(165px, 1fr));
 }
@@ -83,6 +86,7 @@ h1, h2 { margin: 0 0 12px; }
   justify-content: center;
 }
 .panel-recent .val { font-size: 14px; }
+.panel-recent .val.lefttime-longtime { color: #dc2626; font-weight: 700; }
 .panel-recent .kv .key, .panel-recent .kv .val { min-height: 38px; box-sizing: border-box; width: 100%; }
 .key-btn { border: none; cursor: pointer; }
 
