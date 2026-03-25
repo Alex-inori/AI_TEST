@@ -544,35 +544,42 @@ class JobManager:
             readable, _, _ = select.select([fd], [], [], 0.05)
             if not readable:
                 break
-            drained = proc.stdout.readline()
-            if drained == "":
+            drained = os.read(fd, 4096)
+            if not drained:
                 break
 
         proc.stdin.write(f"{command}\n")
         proc.stdin.flush()
 
         deadline = time.monotonic() + max(1.0, timeout_seconds)
-        lines: list[str] = []
+        raw_chunks: list[str] = []
         last_output_at = time.monotonic()
+        saw_output = False
         while time.monotonic() < deadline:
-            if proc.poll() is not None and not lines:
+            if proc.poll() is not None and not saw_output:
                 raise RuntimeError("cfgshell exited unexpectedly")
             readable, _, _ = select.select([fd], [], [], 0.2)
             if not readable:
-                if lines and (time.monotonic() - last_output_at) >= 0.35:
+                if saw_output and (time.monotonic() - last_output_at) >= 0.5:
                     break
                 continue
-            line = proc.stdout.readline()
-            if line == "":
+            chunk = os.read(fd, 4096)
+            if not chunk:
                 continue
-            text = line.rstrip("\r\n")
-            if text.strip() == str(command).strip():
-                continue
-            lines.append(text)
+            raw_chunks.append(chunk.decode("utf-8", errors="replace"))
+            saw_output = True
             last_output_at = time.monotonic()
-        if not lines:
+        if not saw_output:
             raise TimeoutError(f"cfgshell command timeout: {command}")
-        return "\n".join(lines).strip()
+        raw_output = "".join(raw_chunks).strip()
+        if not raw_output:
+            raise TimeoutError(f"cfgshell command timeout: {command}")
+
+        lines = [line.strip("\r") for line in raw_output.splitlines()]
+        filtered = [line for line in lines if line.strip() and line.strip() != str(command).strip()]
+        if filtered:
+            return "\n".join(filtered).strip()
+        return raw_output
 
     @staticmethod
     def _extract_available_device(cfg_scan_output: str, payload: dict[str, Any]) -> str | None:
@@ -626,11 +633,13 @@ class JobManager:
         )
         try:
             scan_output = self._cfgshell_eval(process, "cfg_scan")
+            self._write_process_log(log_file, f"[HAPS_LOCK] cfg_scan(raw): {scan_output}")
             device_id = self._extract_available_device(scan_output, payload)
             if not device_id:
                 state_info = self._summarize_cfg_scan_states(scan_output)
                 raise RuntimeError(f"no available device from cfg_scan: {state_info}")
             open_output = self._cfgshell_eval(process, f"cfg_open {device_id}")
+            self._write_process_log(log_file, f"[HAPS_LOCK] cfg_open(raw): {open_output}")
             handle = self._extract_cfg_handle(open_output)
             if not handle:
                 raise RuntimeError(f"cfg_open failed, output={open_output!r}")
