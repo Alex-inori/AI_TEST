@@ -537,14 +537,20 @@ class JobManager:
     def _cfgshell_eval(proc: subprocess.Popen[str], command: str, timeout_seconds: float = 20) -> str:
         if proc.stdin is None or proc.stdout is None:
             raise RuntimeError("cfgshell stdin/stdout is unavailable")
-        marker = f"__CFG_DONE_{uuid.uuid4().hex}__"
-        proc.stdin.write(f"{command}\n")
-        proc.stdin.write(f'puts "{marker}"\n')
+        marker_begin = f"__CFG_BEGIN_{uuid.uuid4().hex}__"
+        marker_end = f"__CFG_END_{uuid.uuid4().hex}__"
+        proc.stdin.write(f"set __codex_rc [catch {{{command}}} __codex_out]\n")
+        proc.stdin.write(f'puts "{marker_begin}"\n')
+        proc.stdin.write("puts $__codex_rc\n")
+        proc.stdin.write("puts $__codex_out\n")
+        proc.stdin.write(f'puts "{marker_end}"\n')
         proc.stdin.flush()
 
         fd = proc.stdout.fileno()
         deadline = time.monotonic() + max(1.0, timeout_seconds)
-        lines: list[str] = []
+        payload_lines: list[str] = []
+        in_payload = False
+        seen_begin = False
         while time.monotonic() < deadline:
             if proc.poll() is not None:
                 raise RuntimeError("cfgshell exited unexpectedly")
@@ -555,9 +561,27 @@ class JobManager:
             if line == "":
                 continue
             text = line.rstrip("\r\n")
-            if text == marker:
-                return "\n".join(lines)
-            lines.append(text)
+            if text == marker_begin:
+                in_payload = True
+                seen_begin = True
+                payload_lines = []
+                continue
+            if text == marker_end and in_payload:
+                rc = 1
+                cmd_output = ""
+                if payload_lines:
+                    try:
+                        rc = int(payload_lines[0].strip())
+                    except ValueError:
+                        rc = 1
+                    cmd_output = "\n".join(payload_lines[1:]).strip()
+                if rc != 0:
+                    raise RuntimeError(f"cfgshell command failed: {command}; output={cmd_output}")
+                return cmd_output
+            if in_payload:
+                payload_lines.append(text)
+        if seen_begin:
+            raise RuntimeError(f"cfgshell command missing end marker: {command}")
         raise TimeoutError(f"cfgshell command timeout: {command}")
 
     @staticmethod
