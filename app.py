@@ -505,6 +505,11 @@ class UartStreamManager:
 class JobManager:
     STOP_CONFIRM_REMINDER_MINUTES = 5
     STOP_GRACE_MINUTES = 5
+    PREPARE_POLL_INTERVAL_SECONDS = 0.2
+    PREPARE_DB_TO_IMG_DELAY_SECONDS = 5
+    PREPARE_RESET_DELAY_AFTER_IMG_SECONDS = 5
+    PREPARE_RESET_DELAY_NO_IMG_SECONDS = 20
+
     def __init__(self, uart_stream: UartStreamManager) -> None:
         limits = load_ui_limits()
         self.max_recent_jobs = int(limits.get("recent_jobs_max_num", DEFAULT_RECENT_JOBS_MAX_NUM))
@@ -771,8 +776,13 @@ class JobManager:
             with self._lock:
                 if not self._job_is_current_locked(job_id, run_token):
                     return False
-            time.sleep(0.2)
+            time.sleep(self.PREPARE_POLL_INTERVAL_SECONDS)
         return True
+
+    def _prepare_reset_delay_seconds(self, ran_imgload: bool) -> int:
+        if ran_imgload:
+            return self.PREPARE_RESET_DELAY_AFTER_IMG_SECONDS
+        return self.PREPARE_RESET_DELAY_NO_IMG_SECONDS
 
     def _prepare_and_launch_job(self, job_id: str, run_token: int) -> None:
         with self._lock:
@@ -833,7 +843,7 @@ class JobManager:
                     img_file = str(payload.get("img_file") or "").strip()
                     jobs_id = str(payload.get("jobs_id") or job_id)
                     duration_minutes = self._duration_minutes(payload)
-                    if not self._wait_prepare_delay(job_id, run_token, 5):
+                    if not self._wait_prepare_delay(job_id, run_token, self.PREPARE_DB_TO_IMG_DELAY_SECONDS):
                         return
                     with self._lock:
                         if not self._job_is_current_locked(job_id, run_token):
@@ -884,7 +894,7 @@ class JobManager:
                         return
                     self._jobs[job_id].status = "Running::Resetting HAPS_ENV"
 
-                prepare_delay = 5 if ran_imgload else 20
+                prepare_delay = self._prepare_reset_delay_seconds(ran_imgload)
                 if not self._wait_prepare_delay(job_id, run_token, prepare_delay):
                     return
 
