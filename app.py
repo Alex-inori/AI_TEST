@@ -833,7 +833,7 @@ class JobManager:
                     db_load_cmd.append(hmf_txt)
                 self._log_stage_timestamp(log_file, "load_db", "start")
                 rc1 = subprocess.run(db_load_cmd, stdout=log_file, stderr=log_file, text=True).returncode
-                self._log_stage_timestamp(log_file, "load_db", f"end rc={rc1}")
+                self._log_stage_timestamp(log_file, "load_db", "end")
                 if rc1 != 0:
                     self._write_process_log(log_file, f"[HAPS_LOCK] HAPS_DB load failed, exit={rc1}")
                     with self._lock:
@@ -872,7 +872,7 @@ class JobManager:
                     dedup_thread.start()
                     self._log_stage_timestamp(log_file, "load_img", "start")
                     rc_img = subprocess.run([*cfgshell_cmd, imgload_script, img_file], stdout=log_file, stderr=log_file, text=True).returncode
-                    self._log_stage_timestamp(log_file, "load_img", f"end rc={rc_img}")
+                    self._log_stage_timestamp(log_file, "load_img", "end")
                     dedup_thread.join()
                     if "signature" in dedup_result:
                         signature = dedup_result["signature"]
@@ -880,9 +880,10 @@ class JobManager:
                             duplicate = signature in self._img_dedup_signatures
                             if not duplicate:
                                 self._img_dedup_signatures.add(signature)
+                        dedup_text = "file is remain unchanged" if duplicate else "file is new"
                         self._write_process_log(
                             log_file,
-                            f"[HAPS_LOCK] SW_IMG_CHECK algo={dedup_result['algo']} signature={signature} duplicate={'yes' if duplicate else 'no'} file={img_file}",
+                            f"[HAPS_LOCK] SW_IMG_CHECK algo={dedup_result['algo']} signature={signature} {dedup_text}: {img_file}",
                         )
                     elif "value" in dedup_error:
                         self._write_process_log(log_file, f"[HAPS_LOCK] SW_IMG_CHECK failed: {dedup_error['value']}")
@@ -907,9 +908,9 @@ class JobManager:
                 if not self._wait_prepare_delay(job_id, run_token, prepare_delay):
                     return
 
-                self._log_stage_timestamp(log_file, "reset_env", "start")
+                self._log_stage_timestamp(log_file, "reset", "start")
                 rc2 = subprocess.run([*cfgshell_cmd, reset_script], stdout=log_file, stderr=log_file, text=True).returncode
-                self._log_stage_timestamp(log_file, "reset_env", f"end rc={rc2}")
+                self._log_stage_timestamp(log_file, "reset", "end")
                 if rc2 != 0:
                     self._write_process_log(log_file, f"[HAPS_LOCK] HAPS_ENV reset failed, exit={rc2}")
                     with self._lock:
