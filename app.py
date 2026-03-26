@@ -689,7 +689,17 @@ class JobManager:
     @staticmethod
     def _log_stage_timestamp(log_file: Any, stage: str, event: str) -> None:
         timestamp = datetime.now().isoformat(timespec="seconds")
-        JobManager._write_process_log(log_file, f"[HAPS_STAGE] stage={stage} event={event} ts={timestamp}")
+        stage_alias = {
+            "load_db": "load db",
+            "load_img": "load img",
+            "reset_env": "reset",
+            "reset": "reset",
+        }
+        action = stage_alias.get(stage, stage.replace("_", " "))
+        JobManager._write_process_log(
+            log_file,
+            f"[HAPS_STAGE] action={action} stage={stage} event={event} ts={timestamp}",
+        )
 
     @staticmethod
     def _calculate_img_dedup_signature(file_path: str) -> tuple[str, str]:
@@ -907,9 +917,9 @@ class JobManager:
                 if not self._wait_prepare_delay(job_id, run_token, prepare_delay):
                     return
 
-                self._log_stage_timestamp(log_file, "reset_env", "start")
+                self._log_stage_timestamp(log_file, "reset", "start")
                 rc2 = subprocess.run([*cfgshell_cmd, reset_script], stdout=log_file, stderr=log_file, text=True).returncode
-                self._log_stage_timestamp(log_file, "reset_env", f"end rc={rc2}")
+                self._log_stage_timestamp(log_file, "reset", f"end rc={rc2}")
                 if rc2 != 0:
                     self._write_process_log(log_file, f"[HAPS_LOCK] HAPS_ENV reset failed, exit={rc2}")
                     with self._lock:
