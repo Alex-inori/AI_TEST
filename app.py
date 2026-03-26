@@ -61,76 +61,66 @@ def _parse_cfg_list(raw: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
-def load_haps_settings() -> dict[str, Any]:
-    if not CFGSHELL_CONFIG_FILE.exists():
+def _load_cfg_entries(*, required: bool) -> dict[str, str]:
+    if required and not CFGSHELL_CONFIG_FILE.exists():
         raise ValueError(f"missing config file: {CFGSHELL_CONFIG_FILE}")
+    if not CFGSHELL_CONFIG_FILE.exists():
+        return {}
 
-    settings: dict[str, Any] = {}
-    loaded_keys: set[str] = set()
-
+    entries: dict[str, str] = {}
     for raw_line in CFGSHELL_CONFIG_FILE.read_text(encoding="utf-8").splitlines():
         line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if ":" not in line:
+        if not line or line.startswith("#") or ":" not in line:
             continue
         key, raw_value = line.split(":", 1)
-        key = key.strip()
-        value = raw_value.strip()
-        if key == "HAPS_PLATFORM":
-            parsed = _parse_cfg_list(value)
-            if parsed:
-                settings[key] = parsed
-                loaded_keys.add(key)
+        entries[key.strip()] = raw_value.strip()
+    return entries
+
+
+def _parse_positive_int(raw: str | None, default: int) -> int:
+    try:
+        parsed = int(raw or "")
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
+
+
+def _parse_port(raw: str | None, default: int) -> int:
+    parsed = _parse_positive_int(raw, default)
+    return parsed if 1 <= parsed <= 65535 else default
+
+
+def load_haps_settings() -> dict[str, Any]:
+    cfg_entries = _load_cfg_entries(required=True)
+    settings: dict[str, Any] = {}
+
+    for key in REQUIRED_HAPS_SETTINGS:
+        value = cfg_entries.get(key)
+        if value is None:
             continue
-        if key in REQUIRED_HAPS_SETTINGS:
-            settings[key] = value
-            loaded_keys.add(key)
-    missing = sorted(REQUIRED_HAPS_SETTINGS - loaded_keys)
+        if key == "HAPS_PLATFORM":
+            parsed_platforms = _parse_cfg_list(value)
+            if parsed_platforms:
+                settings[key] = parsed_platforms
+            continue
+        settings[key] = value
+
+    missing = sorted(REQUIRED_HAPS_SETTINGS - settings.keys())
     if missing:
         raise ValueError(f"missing required keys in {CFGSHELL_CONFIG_FILE}: {', '.join(missing)}")
     return settings
 
 
 def load_ui_limits() -> dict[str, int]:
-    service_port = DEFAULT_SERVICE_PORT
-    create_jobs_max_num = DEFAULT_CREATE_JOBS_MAX_NUM
-    recent_jobs_max_num = DEFAULT_RECENT_JOBS_MAX_NUM
-
-    if CFGSHELL_CONFIG_FILE.exists():
-        for raw_line in CFGSHELL_CONFIG_FILE.read_text(encoding="utf-8").splitlines():
-            line = raw_line.strip()
-            if not line or line.startswith("#") or ":" not in line:
-                continue
-            key, raw_value = line.split(":", 1)
-            key = key.strip()
-            value = raw_value.strip()
-            if key == "SERVICE_PORT":
-                try:
-                    parsed = int(value)
-                    if 1 <= parsed <= 65535:
-                        service_port = parsed
-                except ValueError:
-                    pass
-            elif key == "CREATE_JOBS_MAX_NUM":
-                try:
-                    parsed = int(value)
-                    if parsed > 0:
-                        create_jobs_max_num = parsed
-                except ValueError:
-                    pass
-            elif key == "RECENT_JOBS_MAX_NUM":
-                try:
-                    parsed = int(value)
-                    if parsed > 0:
-                        recent_jobs_max_num = parsed
-                except ValueError:
-                    pass
-
+    cfg_entries = _load_cfg_entries(required=False)
     return {
-        "service_port": service_port,
-        "create_jobs_max_num": create_jobs_max_num,
-        "recent_jobs_max_num": recent_jobs_max_num,
+        "service_port": _parse_port(cfg_entries.get("SERVICE_PORT"), DEFAULT_SERVICE_PORT),
+        "create_jobs_max_num": _parse_positive_int(
+            cfg_entries.get("CREATE_JOBS_MAX_NUM"), DEFAULT_CREATE_JOBS_MAX_NUM
+        ),
+        "recent_jobs_max_num": _parse_positive_int(
+            cfg_entries.get("RECENT_JOBS_MAX_NUM"), DEFAULT_RECENT_JOBS_MAX_NUM
+        ),
     }
 
 
@@ -515,6 +505,11 @@ class UartStreamManager:
 class JobManager:
     STOP_CONFIRM_REMINDER_MINUTES = 5
     STOP_GRACE_MINUTES = 5
+    PREPARE_POLL_INTERVAL_SECONDS = 0.2
+    PREPARE_DB_TO_IMG_DELAY_SECONDS = 5
+    PREPARE_RESET_DELAY_AFTER_IMG_SECONDS = 5
+    PREPARE_RESET_DELAY_NO_IMG_SECONDS = 20
+
     def __init__(self, uart_stream: UartStreamManager) -> None:
         limits = load_ui_limits()
         self.max_recent_jobs = int(limits.get("recent_jobs_max_num", DEFAULT_RECENT_JOBS_MAX_NUM))
@@ -692,6 +687,11 @@ class JobManager:
             return
 
     @staticmethod
+    def _log_stage_timestamp(log_file: Any, stage: str, event: str) -> None:
+        timestamp = datetime.now().isoformat(timespec="seconds")
+        JobManager._write_process_log(log_file, f"[HAPS_STAGE] stage={stage} event={event} ts={timestamp}")
+
+    @staticmethod
     def _calculate_img_dedup_signature(file_path: str) -> tuple[str, str]:
         sample_bytes = 4 * 1024 * 1024
         file_size = os.path.getsize(file_path)
@@ -781,8 +781,13 @@ class JobManager:
             with self._lock:
                 if not self._job_is_current_locked(job_id, run_token):
                     return False
-            time.sleep(0.2)
+            time.sleep(self.PREPARE_POLL_INTERVAL_SECONDS)
         return True
+
+    def _prepare_reset_delay_seconds(self, ran_imgload: bool) -> int:
+        if ran_imgload:
+            return self.PREPARE_RESET_DELAY_AFTER_IMG_SECONDS
+        return self.PREPARE_RESET_DELAY_NO_IMG_SECONDS
 
     def _prepare_and_launch_job(self, job_id: str, run_token: int) -> None:
         with self._lock:
@@ -826,7 +831,9 @@ class JobManager:
                 db_load_cmd = [*cfgshell_cmd, db_load_script, database_path]
                 if "HAPS100" in haps_platform:
                     db_load_cmd.append(hmf_txt)
+                self._log_stage_timestamp(log_file, "load_db", "start")
                 rc1 = subprocess.run(db_load_cmd, stdout=log_file, stderr=log_file, text=True).returncode
+                self._log_stage_timestamp(log_file, "load_db", f"end rc={rc1}")
                 if rc1 != 0:
                     self._write_process_log(log_file, f"[HAPS_LOCK] HAPS_DB load failed, exit={rc1}")
                     with self._lock:
@@ -843,7 +850,7 @@ class JobManager:
                     img_file = str(payload.get("img_file") or "").strip()
                     jobs_id = str(payload.get("jobs_id") or job_id)
                     duration_minutes = self._duration_minutes(payload)
-                    if not self._wait_prepare_delay(job_id, run_token, 5):
+                    if not self._wait_prepare_delay(job_id, run_token, self.PREPARE_DB_TO_IMG_DELAY_SECONDS):
                         return
                     with self._lock:
                         if not self._job_is_current_locked(job_id, run_token):
@@ -863,7 +870,9 @@ class JobManager:
 
                     dedup_thread = threading.Thread(target=_collect_img_signature, daemon=True)
                     dedup_thread.start()
+                    self._log_stage_timestamp(log_file, "load_img", "start")
                     rc_img = subprocess.run([*cfgshell_cmd, imgload_script, img_file], stdout=log_file, stderr=log_file, text=True).returncode
+                    self._log_stage_timestamp(log_file, "load_img", f"end rc={rc_img}")
                     dedup_thread.join()
                     if "signature" in dedup_result:
                         signature = dedup_result["signature"]
@@ -894,11 +903,13 @@ class JobManager:
                         return
                     self._jobs[job_id].status = "Running::Resetting HAPS_ENV"
 
-                prepare_delay = 5 if ran_imgload else 20
+                prepare_delay = self._prepare_reset_delay_seconds(ran_imgload)
                 if not self._wait_prepare_delay(job_id, run_token, prepare_delay):
                     return
 
+                self._log_stage_timestamp(log_file, "reset_env", "start")
                 rc2 = subprocess.run([*cfgshell_cmd, reset_script], stdout=log_file, stderr=log_file, text=True).returncode
+                self._log_stage_timestamp(log_file, "reset_env", f"end rc={rc2}")
                 if rc2 != 0:
                     self._write_process_log(log_file, f"[HAPS_LOCK] HAPS_ENV reset failed, exit={rc2}")
                     with self._lock:
