@@ -1099,6 +1099,10 @@ class JobManager:
             if not self._is_running_status(job.status):
                 return job
             process = job.process
+            # Invalidate existing watcher callbacks before terminating process to avoid
+            # duplicate finalization/logging races with _watch_job.
+            job.run_token += 1
+            job.process = None
 
         if process and process.poll() is None:
             process.terminate()
@@ -1112,8 +1116,6 @@ class JobManager:
             job = self._jobs[job_id]
             self._uart_stream.stop_capture(job_id)
             self._release_haps_lock_locked(job_id)
-            job.run_token += 1
-            job.process = None
             job.status = "Finish"
             job.end_time = datetime.now().isoformat(timespec="seconds")
             job.message = "job manually finished"
