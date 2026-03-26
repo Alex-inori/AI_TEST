@@ -523,7 +523,7 @@ class JobManager:
         self._waiting_jobs: dict[str, WaitingJobRecord] = {}
         self._waiting_order: list[str] = []
         self._haps_lock_sessions: dict[str, HapsLockSession] = {}
-        self._img_dedup_by_jobs: dict[str, dict[str, Any]] = {}
+        self._img_dedup_signatures: set[str] = set()
         self._lock = threading.Lock()
         self._uart_stream = uart_stream
 
@@ -707,33 +707,6 @@ class JobManager:
         signature = f"{file_size:016x}-{head_crc:08x}-{tail_crc:08x}"
         return algo, signature
 
-    def _check_and_mark_img_signature(self, jobs_id: str, signature: str, duration_minutes: int) -> bool:
-        now_mono = time.monotonic()
-        with self._lock:
-            record = self._img_dedup_by_jobs.get(jobs_id)
-            if record:
-                expires_at = record.get("expires_at")
-                if isinstance(expires_at, float) and now_mono >= expires_at:
-                    record = None
-                    self._img_dedup_by_jobs.pop(jobs_id, None)
-
-            if record is None:
-                expires_at = now_mono + (duration_minutes * 60) if duration_minutes > 0 else None
-                record = {"signatures": set(), "expires_at": expires_at}
-                self._img_dedup_by_jobs[jobs_id] = record
-            else:
-                if duration_minutes > 0:
-                    new_expires = now_mono + (duration_minutes * 60)
-                    old_expires = record.get("expires_at")
-                    if old_expires is None or new_expires > old_expires:
-                        record["expires_at"] = new_expires
-
-            signatures = record["signatures"]
-            duplicate = signature in signatures
-            if not duplicate:
-                signatures.add(signature)
-            return duplicate
-
     def _acquire_device_lock(self, job_id: str, payload: dict[str, Any], cfgshell_cmd: list[str], log_file: Any) -> None:
         master_fd, slave_fd = pty.openpty()
         process = subprocess.Popen(
@@ -894,11 +867,13 @@ class JobManager:
                     dedup_thread.join()
                     if "signature" in dedup_result:
                         signature = dedup_result["signature"]
-                        duplicate = self._check_and_mark_img_signature(jobs_id, signature, duration_minutes)
-                        dedup_state = "remain unchanged" if duplicate else "new"
+                        with self._lock:
+                            duplicate = signature in self._img_dedup_signatures
+                            if not duplicate:
+                                self._img_dedup_signatures.add(signature)
                         self._write_process_log(
                             log_file,
-                            f"[HAPS_LOCK] {img_file} is {dedup_state}",
+                            f"[HAPS_LOCK] SW_IMG_CHECK algo={dedup_result['algo']} signature={signature} duplicate={'yes' if duplicate else 'no'} file={img_file}",
                         )
                     elif "value" in dedup_error:
                         self._write_process_log(log_file, f"[HAPS_LOCK] SW_IMG_CHECK failed: {dedup_error['value']}")
