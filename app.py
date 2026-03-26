@@ -61,76 +61,66 @@ def _parse_cfg_list(raw: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
-def load_haps_settings() -> dict[str, Any]:
-    if not CFGSHELL_CONFIG_FILE.exists():
+def _load_cfg_entries(*, required: bool) -> dict[str, str]:
+    if required and not CFGSHELL_CONFIG_FILE.exists():
         raise ValueError(f"missing config file: {CFGSHELL_CONFIG_FILE}")
+    if not CFGSHELL_CONFIG_FILE.exists():
+        return {}
 
-    settings: dict[str, Any] = {}
-    loaded_keys: set[str] = set()
-
+    entries: dict[str, str] = {}
     for raw_line in CFGSHELL_CONFIG_FILE.read_text(encoding="utf-8").splitlines():
         line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if ":" not in line:
+        if not line or line.startswith("#") or ":" not in line:
             continue
         key, raw_value = line.split(":", 1)
-        key = key.strip()
-        value = raw_value.strip()
-        if key == "HAPS_PLATFORM":
-            parsed = _parse_cfg_list(value)
-            if parsed:
-                settings[key] = parsed
-                loaded_keys.add(key)
+        entries[key.strip()] = raw_value.strip()
+    return entries
+
+
+def _parse_positive_int(raw: str | None, default: int) -> int:
+    try:
+        parsed = int(raw or "")
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
+
+
+def _parse_port(raw: str | None, default: int) -> int:
+    parsed = _parse_positive_int(raw, default)
+    return parsed if 1 <= parsed <= 65535 else default
+
+
+def load_haps_settings() -> dict[str, Any]:
+    cfg_entries = _load_cfg_entries(required=True)
+    settings: dict[str, Any] = {}
+
+    for key in REQUIRED_HAPS_SETTINGS:
+        value = cfg_entries.get(key)
+        if value is None:
             continue
-        if key in REQUIRED_HAPS_SETTINGS:
-            settings[key] = value
-            loaded_keys.add(key)
-    missing = sorted(REQUIRED_HAPS_SETTINGS - loaded_keys)
+        if key == "HAPS_PLATFORM":
+            parsed_platforms = _parse_cfg_list(value)
+            if parsed_platforms:
+                settings[key] = parsed_platforms
+            continue
+        settings[key] = value
+
+    missing = sorted(REQUIRED_HAPS_SETTINGS - settings.keys())
     if missing:
         raise ValueError(f"missing required keys in {CFGSHELL_CONFIG_FILE}: {', '.join(missing)}")
     return settings
 
 
 def load_ui_limits() -> dict[str, int]:
-    service_port = DEFAULT_SERVICE_PORT
-    create_jobs_max_num = DEFAULT_CREATE_JOBS_MAX_NUM
-    recent_jobs_max_num = DEFAULT_RECENT_JOBS_MAX_NUM
-
-    if CFGSHELL_CONFIG_FILE.exists():
-        for raw_line in CFGSHELL_CONFIG_FILE.read_text(encoding="utf-8").splitlines():
-            line = raw_line.strip()
-            if not line or line.startswith("#") or ":" not in line:
-                continue
-            key, raw_value = line.split(":", 1)
-            key = key.strip()
-            value = raw_value.strip()
-            if key == "SERVICE_PORT":
-                try:
-                    parsed = int(value)
-                    if 1 <= parsed <= 65535:
-                        service_port = parsed
-                except ValueError:
-                    pass
-            elif key == "CREATE_JOBS_MAX_NUM":
-                try:
-                    parsed = int(value)
-                    if parsed > 0:
-                        create_jobs_max_num = parsed
-                except ValueError:
-                    pass
-            elif key == "RECENT_JOBS_MAX_NUM":
-                try:
-                    parsed = int(value)
-                    if parsed > 0:
-                        recent_jobs_max_num = parsed
-                except ValueError:
-                    pass
-
+    cfg_entries = _load_cfg_entries(required=False)
     return {
-        "service_port": service_port,
-        "create_jobs_max_num": create_jobs_max_num,
-        "recent_jobs_max_num": recent_jobs_max_num,
+        "service_port": _parse_port(cfg_entries.get("SERVICE_PORT"), DEFAULT_SERVICE_PORT),
+        "create_jobs_max_num": _parse_positive_int(
+            cfg_entries.get("CREATE_JOBS_MAX_NUM"), DEFAULT_CREATE_JOBS_MAX_NUM
+        ),
+        "recent_jobs_max_num": _parse_positive_int(
+            cfg_entries.get("RECENT_JOBS_MAX_NUM"), DEFAULT_RECENT_JOBS_MAX_NUM
+        ),
     }
 
 
