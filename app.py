@@ -42,6 +42,7 @@ REQUIRED_HAPS_SETTINGS = {
     "HAPS_CONFPROSH",
     "HAPS_DB_LOADING_TCL",
     "HAPS_PLATFORM",
+    "UART_DEVICE",
     "UART_LOG_PATH",
     "HAPS_RESET_TCL",
     "HAPS_IMG_LOADING_TCL",
@@ -98,7 +99,7 @@ def load_haps_settings() -> dict[str, Any]:
         value = cfg_entries.get(key)
         if value is None:
             continue
-        if key == "HAPS_PLATFORM":
+        if key in {"HAPS_PLATFORM", "UART_DEVICE"}:
             parsed_platforms = _parse_cfg_list(value)
             if parsed_platforms:
                 settings[key] = parsed_platforms
@@ -1465,10 +1466,14 @@ def validate_submit_payload(
 
     seen_in_job: set[str] = set()
     normalized: list[str] = []
+    allowed_uart_devices = [str(item).strip() for item in list(settings.get("UART_DEVICE") or []) if str(item).strip()]
+    allowed_uart_set = set(allowed_uart_devices)
     for raw in list(payload.get("uart_paths") or []):
         text = str(raw or "").strip()
         if not text:
             continue
+        if allowed_uart_set and text not in allowed_uart_set:
+            raise ValueError(f"uart_path not supported: {text}")
         if text in seen_in_job:
             raise ValueError(f"duplicate UART path in same job: {text}")
         seen_in_job.add(text)
@@ -1753,7 +1758,8 @@ def get_platform_options() -> dict[str, list[str]]:
     except ValueError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     platforms = [str(item).strip() for item in list(settings.get("HAPS_PLATFORM") or []) if str(item).strip()]
-    return {"haps_platforms": platforms}
+    uart_devices = [str(item).strip() for item in list(settings.get("UART_DEVICE") or []) if str(item).strip()]
+    return {"haps_platforms": platforms, "uart_devices": uart_devices}
 
 
 @app.post("/api/jobs")
