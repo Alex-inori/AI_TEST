@@ -841,6 +841,8 @@ class JobManager:
                 if self._should_run_imgload(payload):
                     imgload_script = str(payload.get("imgload_script") or "").strip()
                     img_file = str(payload.get("img_file") or "").strip()
+                    jobs_id = str(payload.get("jobs_id") or job_id)
+                    duration_minutes = self._duration_minutes(payload)
                     if not self._wait_prepare_delay(job_id, run_token, 5):
                         return
                     with self._lock:
