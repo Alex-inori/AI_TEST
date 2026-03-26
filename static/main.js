@@ -17,6 +17,7 @@ let uartSocket = null;
 let uartPingTimer = null;
 let uartReconnectTimer = null;
 let hapsPlatforms = [];
+let uartDevices = [];
 let servicePort = 8000;
 let createJobsMaxNum = 5;
 
@@ -453,7 +454,16 @@ function addUartItem(card, value = '') {
   const uartList = card.querySelector('.uart-list');
   const item = uartTemplate.content.firstElementChild.cloneNode(true);
   const input = item.querySelector('.uart-input');
-  input.value = value;
+  const options = Array.isArray(uartDevices) ? uartDevices.map((v) => String(v || '').trim()).filter(Boolean) : [];
+  input.innerHTML = options.map((device) => `<option value="${device}">${device}</option>`).join('');
+  if (!options.length) {
+    input.innerHTML = '<option value="">No UART_DEVICE config</option>';
+    input.value = '';
+    input.disabled = true;
+  } else {
+    const normalized = String(value || '').trim();
+    input.value = options.includes(normalized) ? normalized : options[0];
+  }
   item.querySelector('.remove-uart-btn').addEventListener('click', () => item.remove());
   uartList.appendChild(item);
 }
@@ -765,6 +775,9 @@ function validateJobsBeforeSubmit(jobs) {
     (job.uart_paths || []).forEach((uart) => {
       const path = String(uart || '').trim();
       if (!path) return;
+      if (Array.isArray(uartDevices) && uartDevices.length && !uartDevices.includes(path)) {
+        throw new Error(`Job ${job.jobs_id || '-'}: UART device not supported: ${path}`);
+      }
       if (localSet.has(path)) duplicateUarts.add(path);
       localSet.add(path);
       if (usedUarts.has(path)) duplicateUarts.add(path);
@@ -1025,6 +1038,9 @@ async function bootstrap() {
     }
     const platformData = await platformResp.json();
     hapsPlatforms = Array.isArray(platformData.haps_platforms) ? platformData.haps_platforms : [];
+    uartDevices = Array.isArray(platformData.uart_devices)
+      ? platformData.uart_devices.map((item) => String(item || '').trim()).filter(Boolean)
+      : [];
   } catch (error) {
     alert(`Failed to load HAPS platform config: ${error instanceof Error ? error.message : String(error)}`);
     return;
