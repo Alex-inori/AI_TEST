@@ -574,7 +574,7 @@ class JobManager:
 
     @staticmethod
     def _is_running_status(status: str) -> bool:
-        return str(status).startswith("Runing") or str(status).startswith("Running")
+        return str(status).startswith("Running::")
 
     @staticmethod
     def _read_haps_settings() -> dict[str, Any]:

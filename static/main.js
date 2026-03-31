@@ -46,7 +46,7 @@ function isEditingUartInput() {
 
 function isRunningStatus(status) {
   const text = String(status || '');
-  return text.startsWith('Runing') || text.startsWith('Running');
+  return text.startsWith('Running::');
 }
 
 function statusClassName(status) {
@@ -413,7 +413,7 @@ function showStopConfirmModal(job) {
   const jobId = job && job.id;
   const deadline = resolveStopDeadline(job);
   modal.overlay.dataset.jobId = String(jobId);
-  modal.message.textContent = 'Runing Jobs will finish in 5mins, PLS Confirm!!!';
+  modal.message.textContent = 'Running Jobs will finish in 5mins, PLS Confirm!!!';
   const updateCountdown = () => {
     const seconds = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
     const mm = String(Math.floor(seconds / 60)).padStart(2, '0');
