@@ -824,6 +824,11 @@ async function stopAndResubmitJob(jobId) {
   refreshRecentJobs();
   refreshWaitingJobs();
 }
+async function openRunningJobTerminal(jobId) {
+  const response = await fetch(buildApiUrl(`/api/jobs/${jobId}/open-terminal`), { method: 'POST' });
+  if (!response.ok) return alert(`Open Terminal failed: ${await response.text()}`);
+  alert('Terminal started.');
+}
 function formatWait(seconds) {
   const safe = Math.max(0, Number(seconds) || 0);
   const h = Math.floor(safe / 3600);
@@ -942,6 +947,13 @@ function renderRecentJobs(jobs) {
     }
     if (running) {
       if (isOwner) {
+        const terminalBtn = document.createElement('button');
+        terminalBtn.textContent = 'Open Terminal';
+        terminalBtn.className = 'copy-btn';
+        terminalBtn.type = 'button';
+        terminalBtn.style.width = '100%';
+        terminalBtn.addEventListener('click', () => openRunningJobTerminal(job.id));
+        actions.appendChild(terminalBtn);
         const stopAndResubmitBtn = document.createElement('button');
         stopAndResubmitBtn.textContent = 'Stop and Resubmit';
         stopAndResubmitBtn.className = 'copy-btn';
