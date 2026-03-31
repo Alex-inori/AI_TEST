@@ -1834,8 +1834,6 @@ def open_job_terminal(job_id: str, request: Request) -> dict[str, Any]:
     if target is None:
         raise HTTPException(status_code=404, detail="job not found")
     payload = target.get("payload") or {}
-    if str(payload.get("user_id") or "") != str(viewer_user_id):
-        raise HTTPException(status_code=403, detail="only owner can open terminal")
     if not manager._is_running_status(str(target.get("status") or "")):
         raise HTTPException(status_code=400, detail="terminal can only be opened for running jobs")
 
