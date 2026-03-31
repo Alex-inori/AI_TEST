@@ -946,14 +946,14 @@ function renderRecentJobs(jobs) {
       actions.appendChild(uartBtn);
     }
     if (running) {
-      const terminalBtn = document.createElement('button');
-      terminalBtn.textContent = 'Open Terminal';
-      terminalBtn.className = 'copy-btn';
-      terminalBtn.type = 'button';
-      terminalBtn.style.width = '100%';
-      terminalBtn.addEventListener('click', () => openRunningJobTerminal(job.id));
-      actions.appendChild(terminalBtn);
       if (isOwner) {
+        const terminalBtn = document.createElement('button');
+        terminalBtn.textContent = 'Open Terminal';
+        terminalBtn.className = 'copy-btn';
+        terminalBtn.type = 'button';
+        terminalBtn.style.width = '100%';
+        terminalBtn.addEventListener('click', () => openRunningJobTerminal(job.id));
+        actions.appendChild(terminalBtn);
         const stopAndResubmitBtn = document.createElement('button');
         stopAndResubmitBtn.textContent = 'Stop and Resubmit';
         stopAndResubmitBtn.className = 'copy-btn';
