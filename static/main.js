@@ -866,7 +866,7 @@ function renderWaitingJobs(jobs) {
       <div class="kv"><span class="key">Wait Time</span><span class="val">${formatWait(job.wait_seconds)}</span></div>
       <div class="kv"><span class="key">Running User</span><span class="val">${job.running_user_id || '-'}</span></div>
     `;
-    if ((payload.user_id || '') === currentUserId) {
+    if (String(payload.user_id || '') === String(currentUserId || '')) {
       const delBtn = document.createElement('button');
       delBtn.type = 'button';
       delBtn.className = 'delete-btn waiting-delete-btn';
@@ -929,7 +929,7 @@ function renderRecentJobs(jobs) {
     copyBtn.addEventListener('click', () => createNewJobCard(payload, null, { regenerateJobsId: true }));
     actions.appendChild(copyBtn);
     const jobUartPaths = Array.isArray(payload.uart_paths) ? payload.uart_paths : [];
-    const isOwner = String(payload.user_id || '') === currentUserId;
+    const isOwner = String(payload.user_id || '') === String(currentUserId || '');
     if (jobUartPaths.length && isOwner) {
       const uartBtn = document.createElement('button');
       const expanded = expandedUartJobs.has(String(job.id));
@@ -1039,7 +1039,7 @@ async function bootstrap() {
     if (sessionResp.ok) {
       const session = await sessionResp.json();
       currentUser = session.user || 'user';
-      currentUserId = session.user_id || currentUserId;
+      currentUserId = String(session.user_id || currentUserId);
     }
   } catch (_) {}
   try {
