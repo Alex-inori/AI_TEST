@@ -829,7 +829,7 @@ async function openRunningJobTerminal(jobId) {
   if (!response.ok) {
     try {
       const detail = await response.text();
-      console.warn('Open Terminal failed:', detail);
+      alert(`Open Terminal failed: ${detail}`);
     } catch (_) {}
   }
 }
