@@ -909,6 +909,21 @@ print(json.dumps({"algo": algo, "signature": signature}))
                     text=True,
                 ).returncode
 
+            def append_log_line(message: str) -> None:
+                if log_file is not None:
+                    self._write_process_log(log_file, message)
+                    return
+                if process_log_path_text:
+                    subprocess.run(
+                        _wrap_command_for_user(
+                            ["bash", "-lc", f"printf '%s\\n' {shlex.quote(message)} >> {shlex.quote(process_log_path_text)}"],
+                            run_as_user,
+                        ),
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        text=True,
+                    )
+
             lock_settings = self._read_haps_settings()
             lock_cfgshell_cmd = list(lock_settings.get("HAPS_CONFPROSH_CMD") or [])
 
@@ -988,12 +1003,11 @@ print(json.dumps({"algo": algo, "signature": signature}))
                             if not duplicate:
                                 self._img_dedup_signatures.add(signature)
                         dedup_text = "file is remain unchanged" if duplicate else "file is new"
-                        self._write_process_log(
-                            log_file,
-                            f"[HAPS_LOCK] SW_IMG_CHECK algo={dedup_result['algo']} signature={signature} {dedup_text}: {img_file}",
+                        append_log_line(
+                            f"[HAPS_LOCK] SW_IMG_CHECK algo={dedup_result['algo']} signature={signature} {dedup_text}: {img_file}"
                         )
                     elif "value" in dedup_error:
-                        self._write_process_log(log_file, f"[HAPS_LOCK] SW_IMG_CHECK failed: {dedup_error['value']}")
+                        append_log_line(f"[HAPS_LOCK] SW_IMG_CHECK failed: {dedup_error['value']}")
                     if rc_img != 0:
                         self._write_process_log(log_file, f"[HAPS_LOCK] SW_IMG load failed, exit={rc_img}")
                         with self._lock:
