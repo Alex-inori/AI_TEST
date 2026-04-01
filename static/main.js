@@ -826,7 +826,12 @@ async function stopAndResubmitJob(jobId) {
 }
 async function openRunningJobTerminal(jobId) {
   const response = await fetch(buildApiUrl(`/api/jobs/${jobId}/open-terminal`), { method: 'POST' });
-  if (!response.ok) return alert(`Open Terminal failed: ${await response.text()}`);
+  if (!response.ok) {
+    try {
+      const detail = await response.text();
+      console.warn('Open Terminal failed:', detail);
+    } catch (_) {}
+  }
 }
 function formatWait(seconds) {
   const safe = Math.max(0, Number(seconds) || 0);
