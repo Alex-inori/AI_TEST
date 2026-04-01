@@ -424,6 +424,8 @@ class UartStreamManager:
             open_kwargs = {"baudrate": 115200, "timeout": 0.5, "exclusive": True}
             uart = None
             warned_busy = False
+            open_started = time.monotonic()
+            last_wait_notice = 0.0
             while not stop_event.is_set():
                 try:
                     uart = serial.Serial(device, **open_kwargs)
@@ -453,10 +455,13 @@ class UartStreamManager:
                         })
                         if fixed:
                             continue
-                    if not warned_busy:
+                    now_wait = time.monotonic()
+                    if (not warned_busy) or (now_wait - last_wait_notice >= 5):
                         warned_busy = True
+                        last_wait_notice = now_wait
                         busy_ts = datetime.now().isoformat(timespec="seconds")
-                        busy_message = f"[{job_id}] waiting for UART release: {open_exc}"
+                        elapsed = int(max(0, now_wait - open_started))
+                        busy_message = f"[{job_id}] waiting for UART release ({elapsed}s): {open_exc}"
                         self._write_uart_log(job_id, device, f"[{busy_ts}] {busy_message}")
                         self._append_and_broadcast({
                             "type": "status",
@@ -465,6 +470,8 @@ class UartStreamManager:
                             "line": busy_message,
                             "ts": busy_ts,
                         })
+                    if (now_wait - open_started) >= 120:
+                        raise TimeoutError(f"open {device} timeout after 120s: {open_exc}")
                     time.sleep(0.3)
 
             if uart is None:
