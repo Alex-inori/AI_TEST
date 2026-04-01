@@ -952,10 +952,17 @@ function renderRecentJobs(jobs) {
     if (running) {
       if (isOwner) {
         const terminalBtn = document.createElement('button');
-        terminalBtn.textContent = 'Open Terminal';
-        terminalBtn.className = 'copy-btn';
+        terminalBtn.className = 'copy-btn terminal-icon-btn';
         terminalBtn.type = 'button';
         terminalBtn.style.width = '100%';
+        terminalBtn.title = 'Open Terminal';
+        terminalBtn.setAttribute('aria-label', 'Open Terminal');
+        terminalBtn.innerHTML = `
+          <svg class="terminal-icon" viewBox="0 0 512 512" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+            <rect x="32" y="64" width="448" height="384" rx="64" fill="#3F4E63"/>
+            <polyline points="150,200 230,280 150,360" fill="none" stroke="#E5E7EB" stroke-width="32" stroke-linecap="round" stroke-linejoin="round"/>
+            <line x1="260" y1="340" x2="360" y2="340" stroke="#E5E7EB" stroke-width="32" stroke-linecap="round"/>
+          </svg>`;
         terminalBtn.addEventListener('click', () => openRunningJobTerminal(job.id));
         actions.appendChild(terminalBtn);
         const stopAndResubmitBtn = document.createElement('button');
