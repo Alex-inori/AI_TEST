@@ -20,24 +20,6 @@ let hapsPlatforms = [];
 let uartDevices = [];
 let servicePort = 8000;
 let createJobsMaxNum = 5;
-let alertDebugInstalled = false;
-
-function installAlertDebugHook() {
-  if (alertDebugInstalled) return;
-  if (typeof window === 'undefined' || typeof window.alert !== 'function') return;
-  const originalAlert = window.alert.bind(window);
-  window.alert = (message) => {
-    const text = String(message || '');
-    if (text.includes('Terminal started')) {
-      // 全局拦截：无论由哪个脚本触发，都不再弹出该提示
-      const stack = new Error('Debug stack for alert("Terminal started")').stack || '';
-      console.error('[DEBUG] blocked alert("Terminal started"). Stack:\n', stack);
-      return;
-    }
-    return originalAlert(message);
-  };
-  alertDebugInstalled = true;
-}
 
 function serviceBaseUrl() {
   return `http://127.0.0.1:${servicePort}`;
@@ -1046,7 +1028,6 @@ async function refreshRecentJobs() {
   renderRecentJobs(jobs);
 }
 async function bootstrap() {
-  installAlertDebugHook();
   try {
     const cfgResp = await fetch('/api/client-config');
     if (cfgResp.ok) {
