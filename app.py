@@ -209,6 +209,7 @@ class UartStreamManager:
         self._writers: dict[tuple[str, str], Any] = {}
         self._writer_locks: dict[tuple[str, str], threading.Lock] = {}
         self._uart_users: dict[tuple[str, str], str] = {}
+        self._uart_log_paths: dict[tuple[str, str], str] = {}
         self._uart_log_files: dict[tuple[str, str], Any] = {}
         self._uart_log_locks: dict[tuple[str, str], threading.Lock] = {}
         self._lock = threading.Lock()
@@ -258,13 +259,41 @@ class UartStreamManager:
         with self._lock:
             handle = self._uart_log_files.get(key)
             lock = self._uart_log_locks.get(key)
+            run_as_user = str(self._uart_users.get(key) or "")
+            fallback_log_path = str(self._uart_log_paths.get(key) or "")
         if handle is None or lock is None:
+            if fallback_log_path and run_as_user:
+                try:
+                    subprocess.run(
+                        _wrap_command_for_user(
+                            ["bash", "-lc", f"printf '%s\\n' {shlex.quote(line)} >> {shlex.quote(fallback_log_path)}"],
+                            run_as_user,
+                        ),
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        text=True,
+                    )
+                except Exception:
+                    pass
             return
         try:
             with lock:
                 handle.write(f"{line}\n")
                 handle.flush()
         except Exception:
+            if fallback_log_path and run_as_user:
+                try:
+                    subprocess.run(
+                        _wrap_command_for_user(
+                            ["bash", "-lc", f"printf '%s\\n' {shlex.quote(line)} >> {shlex.quote(fallback_log_path)}"],
+                            run_as_user,
+                        ),
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        text=True,
+                    )
+                except Exception:
+                    pass
             return
 
     def start_capture(self, job_id: str, jobs_id: str, uart_paths: list[str], log_path: str, run_as_user: str = "") -> None:
@@ -302,6 +331,7 @@ class UartStreamManager:
                 self._uart_log_files[key] = log_handle
                 self._uart_log_locks[key] = threading.Lock()
                 self._uart_users[key] = str(run_as_user or "")
+                self._uart_log_paths[key] = str(uart_log_path)
                 stop_event = threading.Event()
                 worker = threading.Thread(target=self._read_serial_worker, args=(job_id, device, stop_event), daemon=True)
                 self._threads[key] = (stop_event, worker)
@@ -317,6 +347,7 @@ class UartStreamManager:
                 handle = self._uart_log_files.pop(key, None)
                 self._uart_log_locks.pop(key, None)
                 self._uart_users.pop(key, None)
+                self._uart_log_paths.pop(key, None)
                 if handle is not None:
                     try:
                         handle.close()
@@ -338,6 +369,7 @@ class UartStreamManager:
             self._uart_log_files.clear()
             self._uart_log_locks.clear()
             self._uart_users.clear()
+            self._uart_log_paths.clear()
 
         for stop_event, _ in workers:
             stop_event.set()
@@ -551,6 +583,7 @@ class UartStreamManager:
                 handle = self._uart_log_files.pop((job_id, device), None)
                 self._uart_log_locks.pop((job_id, device), None)
                 self._uart_users.pop((job_id, device), None)
+                self._uart_log_paths.pop((job_id, device), None)
                 if handle is not None:
                     try:
                         handle.close()
