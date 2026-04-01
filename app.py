@@ -283,12 +283,19 @@ class UartStreamManager:
             with self._lock:
                 if key in self._threads:
                     continue
-                log_dir = self._resolve_log_directory(log_path)
-                log_dir.mkdir(parents=True, exist_ok=True)
                 safe_device = self._sanitize_device_name(device)
                 safe_jobs_id = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in str(jobs_id or "job"))
-                uart_log_path = log_dir / f"{safe_jobs_id}{safe_device}.log"
-                log_handle = uart_log_path.open("a", encoding="utf-8")
+                resolved_log_dir = self._resolve_log_directory(log_path)
+                uart_log_path = resolved_log_dir / f"{safe_jobs_id}{safe_device}.log"
+                log_handle = None
+                try:
+                    resolved_log_dir.mkdir(parents=True, exist_ok=True)
+                    log_handle = uart_log_path.open("a", encoding="utf-8")
+                except Exception:
+                    fallback_dir = Path("/tmp/uart_logs")
+                    fallback_dir.mkdir(parents=True, exist_ok=True)
+                    uart_log_path = fallback_dir / f"{safe_jobs_id}{safe_device}.log"
+                    log_handle = uart_log_path.open("a", encoding="utf-8")
                 self._uart_log_files[key] = log_handle
                 self._uart_log_locks[key] = threading.Lock()
                 self._uart_users[key] = str(run_as_user or "")
