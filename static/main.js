@@ -29,9 +29,10 @@ function installAlertDebugHook() {
   window.alert = (message) => {
     const text = String(message || '');
     if (text.includes('Terminal started')) {
-      // 调试定位：确认是谁触发了 "Terminal started"
+      // 全局拦截：无论由哪个脚本触发，都不再弹出该提示
       const stack = new Error('Debug stack for alert("Terminal started")').stack || '';
-      console.error('[DEBUG] alert("Terminal started") called. Stack:\n', stack);
+      console.error('[DEBUG] blocked alert("Terminal started"). Stack:\n', stack);
+      return;
     }
     return originalAlert(message);
   };
