@@ -1777,10 +1777,21 @@ def _session_token_from_request(request: Request) -> str:
 
 def _require_session(request: Request) -> SessionRecord:
     token = _session_token_from_request(request)
-    session = session_manager.resolve(token)
-    if session is None:
-        raise HTTPException(status_code=401, detail="invalid or expired session")
-    return session
+    if token:
+        session = session_manager.resolve(token)
+        if session is None:
+            raise HTTPException(status_code=401, detail="invalid or expired session")
+        return session
+
+    # Backward-compatible fallback: when no session token is provided, derive linux user
+    # from the request context and mint a short-lived in-memory session.
+    # This keeps legacy deployment/health-check flows working for service user A.
+    try:
+        fallback_user_id = _validate_linux_username(get_system_user_id(request))
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail=f"session required: {exc}") from exc
+    fallback_user = get_system_user(request)
+    return session_manager.issue(user_id=fallback_user_id, username=fallback_user)
 
 @app.websocket("/ws/uart")
 async def ws_uart(websocket: WebSocket) -> None:
