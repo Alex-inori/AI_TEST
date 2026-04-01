@@ -813,17 +813,22 @@ class JobManager:
         log_file = None
         lock_acquired = False
         try:
+            run_as_user = _validate_linux_username(str(payload.get("user_id") or ""))
             log_path = str(payload.get("log_path") or "").strip()
+            log_target = subprocess.DEVNULL
             lock_settings: dict[str, Any] | None = None
             lock_cfgshell_cmd: list[str] | None = None
-            run_as_user = _validate_linux_username(str(payload.get("user_id") or ""))
             if log_path:
-                log_dir = Path(log_path).expanduser()
-                log_dir.mkdir(parents=True, exist_ok=True)
+                mkdir_cmd = _wrap_command_for_user(["mkdir", "-p", log_path], run_as_user)
+                subprocess.run(mkdir_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, text=True)
                 jobs_id = str(payload.get("jobs_id") or job_id)
                 safe_jobs_id = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in jobs_id)
-                process_log_path = log_dir / f"{safe_jobs_id}.log"
-                log_file = process_log_path.open("a", encoding="utf-8")
+                process_log_path = Path(log_path).expanduser() / f"{safe_jobs_id}.log"
+                try:
+                    log_file = process_log_path.open("a", encoding="utf-8")
+                except Exception:
+                    log_file = None
+                log_target = log_file if log_file is not None else subprocess.DEVNULL
 
             lock_settings = self._read_haps_settings()
             lock_cfgshell_cmd = list(lock_settings.get("HAPS_CONFPROSH_CMD") or [])
@@ -848,7 +853,7 @@ class JobManager:
                     db_load_cmd.append(hmf_txt)
                 self._log_stage_timestamp(log_file, "load_db", "start")
                 rc1 = subprocess.run(
-                    _wrap_command_for_user(db_load_cmd, run_as_user), stdout=log_file, stderr=log_file, text=True
+                    _wrap_command_for_user(db_load_cmd, run_as_user), stdout=log_target, stderr=log_target, text=True
                 ).returncode
                 self._log_stage_timestamp(log_file, "load_db", "end")
                 if rc1 != 0:
@@ -890,8 +895,8 @@ class JobManager:
                     self._log_stage_timestamp(log_file, "load_img", "start")
                     rc_img = subprocess.run(
                         _wrap_command_for_user([*cfgshell_cmd, imgload_script, img_file], run_as_user),
-                        stdout=log_file,
-                        stderr=log_file,
+                        stdout=log_target,
+                        stderr=log_target,
                         text=True,
                     ).returncode
                     self._log_stage_timestamp(log_file, "load_img", "end")
@@ -933,8 +938,8 @@ class JobManager:
                 self._log_stage_timestamp(log_file, "reset", "start")
                 rc2 = subprocess.run(
                     _wrap_command_for_user([*cfgshell_cmd, reset_script], run_as_user),
-                    stdout=log_file,
-                    stderr=log_file,
+                    stdout=log_target,
+                    stderr=log_target,
                     text=True,
                 ).returncode
                 self._log_stage_timestamp(log_file, "reset", "end")
