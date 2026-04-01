@@ -719,6 +719,43 @@ class JobManager:
         signature = f"{file_size:016x}-{head_crc:08x}-{tail_crc:08x}"
         return algo, signature
 
+    @staticmethod
+    def _calculate_img_dedup_signature_as_user(file_path: str, run_as_user: str) -> tuple[str, str]:
+        script = """
+import json
+import os
+import pathlib
+import sys
+import zlib
+
+sample_bytes = 4 * 1024 * 1024
+path = pathlib.Path(sys.argv[1]).expanduser()
+file_size = os.path.getsize(path)
+with path.open("rb") as handle:
+    head = handle.read(sample_bytes)
+    tail = b""
+    if file_size > sample_bytes:
+        handle.seek(max(0, file_size - sample_bytes))
+        tail = handle.read(sample_bytes)
+head_crc = zlib.crc32(head) & 0xFFFFFFFF
+tail_crc = zlib.crc32(tail) & 0xFFFFFFFF
+algo = "size+crc32(head4MB,tail4MB)"
+signature = f"{file_size:016x}-{head_crc:08x}-{tail_crc:08x}"
+print(json.dumps({"algo": algo, "signature": signature}))
+"""
+        result = subprocess.run(
+            _wrap_command_for_user(["python3", "-c", script, file_path], run_as_user),
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            raise RuntimeError((result.stderr or result.stdout or "SW_IMG_CHECK failed").strip())
+        try:
+            payload = json.loads(result.stdout or "{}")
+            return str(payload["algo"]), str(payload["signature"])
+        except Exception as exc:
+            raise RuntimeError("SW_IMG_CHECK parse failed") from exc
+
     def _acquire_device_lock(
         self, job_id: str, payload: dict[str, Any], cfgshell_cmd: list[str], log_file: Any, run_as_user: str
     ) -> None:
@@ -904,7 +941,7 @@ class JobManager:
 
                     def _collect_img_signature() -> None:
                         try:
-                            algo, signature = self._calculate_img_dedup_signature(img_file)
+                            algo, signature = self._calculate_img_dedup_signature_as_user(img_file, run_as_user)
                             dedup_result["algo"] = algo
                             dedup_result["signature"] = signature
                         except Exception as exc:
