@@ -1424,37 +1424,69 @@ def build_jobs_id(jobs_id: str, user_id: str = "") -> str:
     return f"{user}_{ts}"
 
 
-def _validate_tcl_file(path_text: str, *, field_name: str) -> Path:
+def _inspect_path_as_user(path_text: str, run_as_user: str) -> dict[str, Any]:
+    script = """
+import json
+import pathlib
+import sys
+
+raw = sys.argv[1]
+p = pathlib.Path(raw).expanduser()
+print(json.dumps({
+    "resolved": str(p),
+    "exists": p.exists(),
+    "is_file": p.is_file(),
+    "is_dir": p.is_dir(),
+    "suffix": p.suffix.lower(),
+}))
+"""
+    result = subprocess.run(
+        _wrap_command_for_user(["python3", "-c", script, path_text], run_as_user),
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise ValueError(f"path access failed for user {run_as_user}: {path_text}")
+    try:
+        return json.loads(result.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid path check result for user {run_as_user}: {path_text}") from exc
+
+
+def _validate_tcl_file(path_text: str, *, field_name: str, run_as_user: str) -> str:
     value = (path_text or "").strip()
     if not value:
         raise ValueError(f"{field_name} is enabled but empty")
-    path = Path(value).expanduser()
-    if not path.exists():
-        raise ValueError(f"{field_name} not found: {path}")
-    if not path.is_file():
-        raise ValueError(f"{field_name} must be a file: {path}")
-    if path.suffix.lower() != ".tcl":
-        raise ValueError(f"{field_name} must be a .tcl script: {path}")
-    return path
+    path_info = _inspect_path_as_user(value, run_as_user)
+    path_resolved = str(path_info.get("resolved") or value)
+    if not bool(path_info.get("exists")):
+        raise ValueError(f"{field_name} not found: {path_resolved}")
+    if not bool(path_info.get("is_file")):
+        raise ValueError(f"{field_name} must be a file: {path_resolved}")
+    if str(path_info.get("suffix") or "") != ".tcl":
+        raise ValueError(f"{field_name} must be a .tcl script: {path_resolved}")
+    return path_resolved
 
 
-def _validate_img_file(path_text: str, *, field_name: str) -> Path:
+def _validate_img_file(path_text: str, *, field_name: str, run_as_user: str) -> str:
     value = (path_text or "").strip()
     if not value:
         raise ValueError(f"{field_name} is required when imgload_script_enabled=true")
-    path = Path(value).expanduser()
-    if not path.exists():
-        raise ValueError(f"{field_name} not found: {path}")
-    if not path.is_file():
-        raise ValueError(f"{field_name} must be a file: {path}")
-    if path.suffix.lower() not in {".img", ".bin"}:
-        raise ValueError(f"{field_name} must be a .img or .bin file: {path}")
-    return path
+    path_info = _inspect_path_as_user(value, run_as_user)
+    path_resolved = str(path_info.get("resolved") or value)
+    if not bool(path_info.get("exists")):
+        raise ValueError(f"{field_name} not found: {path_resolved}")
+    if not bool(path_info.get("is_file")):
+        raise ValueError(f"{field_name} must be a file: {path_resolved}")
+    if str(path_info.get("suffix") or "") not in {".img", ".bin"}:
+        raise ValueError(f"{field_name} must be a .img or .bin file: {path_resolved}")
+    return path_resolved
 
 
 def validate_submit_payload(
     payload: dict[str, Any],
     settings: dict[str, Any],
+    run_as_user: str,
     used_uart_paths: set[str] | None = None,
 ) -> None:
     haps_platform = str(payload.get("haps_platform") or "").strip()
@@ -1469,9 +1501,12 @@ def validate_submit_payload(
     if db_enabled:
         if not db_path_text:
             raise ValueError("database_path is enabled but empty")
-        database_path = Path(db_path_text).expanduser()
-        if not database_path.exists():
+        database_info = _inspect_path_as_user(db_path_text, run_as_user)
+        database_path = str(database_info.get("resolved") or db_path_text)
+        if not bool(database_info.get("exists")):
             raise ValueError(f"database_path not found: {database_path}")
+        if not bool(database_info.get("is_dir")):
+            raise ValueError(f"database_path must be a directory: {database_path}")
 
     if "HAPS100" in haps_platform and db_enabled:
         hmf_txt = str(payload.get("haps_hmf_txt") or "").strip()
@@ -1481,14 +1516,14 @@ def validate_submit_payload(
     reset_enabled = bool(payload.get("reset_script_enabled", False))
     imgload_enabled = bool(payload.get("imgload_script_enabled", False))
     if reset_enabled:
-        _validate_tcl_file(str(payload.get("reset_script") or ""), field_name="reset_script")
+        _validate_tcl_file(str(payload.get("reset_script") or ""), field_name="reset_script", run_as_user=run_as_user)
     if imgload_enabled:
         if not db_enabled:
             raise ValueError("imgload_script_enabled requires database_path_enabled=true")
         if not reset_enabled:
             raise ValueError("imgload_script_enabled requires reset_script_enabled=true")
-        _validate_tcl_file(str(payload.get("imgload_script") or ""), field_name="imgload_script")
-        _validate_img_file(str(payload.get("img_file") or ""), field_name="img_file")
+        _validate_tcl_file(str(payload.get("imgload_script") or ""), field_name="imgload_script", run_as_user=run_as_user)
+        _validate_img_file(str(payload.get("img_file") or ""), field_name="img_file", run_as_user=run_as_user)
 
     seen_in_job: set[str] = set()
     normalized: list[str] = []
@@ -1987,11 +2022,18 @@ def submit_jobs(payload: SubmitJobsRequest, request: Request) -> dict[str, Any]:
                 data["jobs_id"],
             )
             if data["log_path"]:
-                Path(data["log_path"]).mkdir(parents=True, exist_ok=True)
+                mkdir_rc = subprocess.run(
+                    _wrap_command_for_user(["mkdir", "-p", str(data["log_path"])], data["user_id"]),
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    text=True,
+                ).returncode
+                if mkdir_rc != 0:
+                    raise ValueError(f"log_path create failed for user {data['user_id']}: {data['log_path']}")
             if "HAPS100" in str(data.get("haps_platform") or ""):
                 data["haps_hmf_txt"] = str(settings.get("HAPS_HMF_TXT") or "").strip()
 
-            validate_submit_payload(data, settings=settings, used_uart_paths=used_uart_paths)
+            validate_submit_payload(data, settings=settings, run_as_user=data["user_id"], used_uart_paths=used_uart_paths)
             data["log_info"] = build_log_info(data.get("log_path", ""))
             result = manager.submit(data)
         except ValueError as exc:
