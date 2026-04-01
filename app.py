@@ -779,44 +779,59 @@ print(json.dumps({"algo": algo, "signature": signature}))
     def _acquire_device_lock(
         self, job_id: str, payload: dict[str, Any], cfgshell_cmd: list[str], log_file: Any, run_as_user: str
     ) -> None:
-        master_fd, slave_fd = pty.openpty()
-        process = subprocess.Popen(
-            _wrap_command_for_user(cfgshell_cmd, run_as_user),
-            stdin=slave_fd,
-            stdout=slave_fd,
-            stderr=slave_fd,
-        )
-        os.close(slave_fd)
-        try:
-            scan_output = self._cfgshell_eval(process, master_fd, "cfg_scan")
-            device_id = self._extract_available_device(scan_output, payload)
-            if not device_id:
-                state_info = self._summarize_cfg_scan_states(scan_output)
-                raise RuntimeError(f"no available device from cfg_scan: {state_info}")
-            open_output = self._cfgshell_eval(process, master_fd, f"cfg_open {device_id}")
-            handle = self._extract_cfg_handle(open_output)
-            if not handle:
-                raise RuntimeError(f"cfg_open failed, output={open_output!r}")
-            lock_scan_output = self._cfgshell_eval(process, master_fd, "cfg_scan")
-            self._write_process_log(log_file, f"[HAPS_LOCK] job={job_id} platform={payload.get('haps_platform')} device={device_id} handle={handle}")
-            self._write_process_log(log_file, f"[HAPS_LOCK] cfg_scan(after open): {lock_scan_output}")
-            with self._lock:
-                self._haps_lock_sessions[job_id] = HapsLockSession(process=process, device_id=device_id, handle=handle, io_fd=master_fd)
-        except Exception:
+        service_user = get_system_user(None)
+        attempts = [run_as_user]
+        if service_user and service_user not in attempts:
+            attempts.append(service_user)
+        last_error: Exception | None = None
+        for lock_user in attempts:
+            master_fd, slave_fd = pty.openpty()
+            process = subprocess.Popen(
+                _wrap_command_for_user(cfgshell_cmd, lock_user),
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+            )
+            os.close(slave_fd)
             try:
-                process.terminate()
-                process.wait(timeout=3)
-            except Exception:
+                scan_output = self._cfgshell_eval(process, master_fd, "cfg_scan")
+                device_id = self._extract_available_device(scan_output, payload)
+                if not device_id:
+                    state_info = self._summarize_cfg_scan_states(scan_output)
+                    raise RuntimeError(f"no available device from cfg_scan: {state_info}")
+                open_output = self._cfgshell_eval(process, master_fd, f"cfg_open {device_id}")
+                handle = self._extract_cfg_handle(open_output)
+                if not handle:
+                    raise RuntimeError(f"cfg_open failed, output={open_output!r}")
+                lock_scan_output = self._cfgshell_eval(process, master_fd, "cfg_scan")
+                self._write_process_log(
+                    log_file,
+                    f"[HAPS_LOCK] job={job_id} platform={payload.get('haps_platform')} device={device_id} handle={handle} lock_user={lock_user}",
+                )
+                self._write_process_log(log_file, f"[HAPS_LOCK] cfg_scan(after open): {lock_scan_output}")
+                with self._lock:
+                    self._haps_lock_sessions[job_id] = HapsLockSession(
+                        process=process, device_id=device_id, handle=handle, io_fd=master_fd
+                    )
+                return
+            except Exception as exc:
+                last_error = exc
                 try:
-                    process.kill()
+                    process.terminate()
                     process.wait(timeout=3)
                 except Exception:
+                    try:
+                        process.kill()
+                        process.wait(timeout=3)
+                    except Exception:
+                        pass
+                try:
+                    os.close(master_fd)
+                except Exception:
                     pass
-            try:
-                os.close(master_fd)
-            except Exception:
-                pass
-            raise
+                self._write_process_log(log_file, f"[HAPS_LOCK] lock attempt failed for user={lock_user}: {exc}")
+        if last_error is not None:
+            raise last_error
 
     def _release_haps_lock_locked(self, job_id: str, log_file: Any = None) -> None:
         session = self._haps_lock_sessions.pop(job_id, None)
