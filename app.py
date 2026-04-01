@@ -125,6 +125,11 @@ def load_ui_limits() -> dict[str, int]:
     }
 
 
+def load_terminal_path() -> str:
+    cfg_entries = _load_cfg_entries(required=False)
+    return str(cfg_entries.get("TERMINAL") or "").strip()
+
+
 class OpenOcdCfgInput(BaseModel):
     tool_path: str = ""
     cfg_file: str = ""
@@ -569,7 +574,7 @@ class JobManager:
 
     @staticmethod
     def _is_running_status(status: str) -> bool:
-        return str(status).startswith("Runing") or str(status).startswith("Running")
+        return str(status).startswith("Running::")
 
     @staticmethod
     def _read_haps_settings() -> dict[str, Any]:
@@ -1819,6 +1824,46 @@ def stop_job(job_id: str) -> dict[str, Any]:
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="job not found") from exc
     return manager._to_api(job)
+
+
+@app.post("/api/jobs/{job_id}/open-terminal")
+def open_job_terminal(job_id: str, request: Request) -> dict[str, Any]:
+    viewer_user_id = get_system_user_id(request)
+    all_jobs = manager.list_jobs(viewer_user_id=viewer_user_id)
+    target = next((job for job in all_jobs if str(job.get("id")) == str(job_id)), None)
+    if target is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    payload = target.get("payload") or {}
+    if str(payload.get("user_id") or "") != str(viewer_user_id):
+        raise HTTPException(status_code=403, detail="only owner can open terminal")
+    if not manager._is_running_status(str(target.get("status") or "")):
+        raise HTTPException(status_code=400, detail="terminal can only be opened for running jobs")
+
+    terminal_path = load_terminal_path()
+    if not terminal_path:
+        raise HTTPException(status_code=400, detail="missing TERMINAL in cfgshell.conf")
+    if not Path(terminal_path).exists():
+        raise HTTPException(status_code=400, detail=f"terminal path not found: {terminal_path}")
+    if not os.access(terminal_path, os.X_OK):
+        raise HTTPException(status_code=400, detail=f"terminal path is not executable: {terminal_path}")
+
+    launch_cwd = str(payload.get("log_path") or "").strip() or str(Path.home())
+    if not Path(launch_cwd).exists():
+        launch_cwd = str(Path.home())
+
+    try:
+        subprocess.Popen(  # noqa: S603
+            [terminal_path],  # noqa: S607
+            cwd=launch_cwd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"failed to open terminal: {exc}") from exc
+
+    return {"ok": True}
 
 
 @app.post("/api/jobs/{job_id}/confirm-stop")

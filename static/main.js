@@ -46,7 +46,7 @@ function isEditingUartInput() {
 
 function isRunningStatus(status) {
   const text = String(status || '');
-  return text.startsWith('Runing') || text.startsWith('Running');
+  return text.startsWith('Running::');
 }
 
 function statusClassName(status) {
@@ -413,7 +413,7 @@ function showStopConfirmModal(job) {
   const jobId = job && job.id;
   const deadline = resolveStopDeadline(job);
   modal.overlay.dataset.jobId = String(jobId);
-  modal.message.textContent = 'Runing Jobs will finish in 5mins, PLS Confirm!!!';
+  modal.message.textContent = 'Running Jobs will finish in 5mins, PLS Confirm!!!';
   const updateCountdown = () => {
     const seconds = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
     const mm = String(Math.floor(seconds / 60)).padStart(2, '0');
@@ -824,6 +824,15 @@ async function stopAndResubmitJob(jobId) {
   refreshRecentJobs();
   refreshWaitingJobs();
 }
+async function openRunningJobTerminal(jobId) {
+  const response = await fetch(buildApiUrl(`/api/jobs/${jobId}/open-terminal`), { method: 'POST' });
+  if (!response.ok) {
+    try {
+      const detail = await response.text();
+      alert(`Open Terminal failed: ${detail}`);
+    } catch (_) {}
+  }
+}
 function formatWait(seconds) {
   const safe = Math.max(0, Number(seconds) || 0);
   const h = Math.floor(safe / 3600);
@@ -861,7 +870,7 @@ function renderWaitingJobs(jobs) {
       <div class="kv"><span class="key">Wait Time</span><span class="val">${formatWait(job.wait_seconds)}</span></div>
       <div class="kv"><span class="key">Running User</span><span class="val">${job.running_user_id || '-'}</span></div>
     `;
-    if ((payload.user_id || '') === currentUserId) {
+    if (String(payload.user_id || '') === String(currentUserId || '')) {
       const delBtn = document.createElement('button');
       delBtn.type = 'button';
       delBtn.className = 'delete-btn waiting-delete-btn';
@@ -924,7 +933,7 @@ function renderRecentJobs(jobs) {
     copyBtn.addEventListener('click', () => createNewJobCard(payload, null, { regenerateJobsId: true }));
     actions.appendChild(copyBtn);
     const jobUartPaths = Array.isArray(payload.uart_paths) ? payload.uart_paths : [];
-    const isOwner = String(payload.user_id || '') === currentUserId;
+    const isOwner = String(payload.user_id || '') === String(currentUserId || '');
     if (jobUartPaths.length && isOwner) {
       const uartBtn = document.createElement('button');
       const expanded = expandedUartJobs.has(String(job.id));
@@ -942,6 +951,13 @@ function renderRecentJobs(jobs) {
     }
     if (running) {
       if (isOwner) {
+        const terminalBtn = document.createElement('button');
+        terminalBtn.textContent = 'Open Terminal';
+        terminalBtn.className = 'copy-btn';
+        terminalBtn.type = 'button';
+        terminalBtn.style.width = '100%';
+        terminalBtn.addEventListener('click', () => openRunningJobTerminal(job.id));
+        actions.appendChild(terminalBtn);
         const stopAndResubmitBtn = document.createElement('button');
         stopAndResubmitBtn.textContent = 'Stop and Resubmit';
         stopAndResubmitBtn.className = 'copy-btn';
@@ -1027,7 +1043,7 @@ async function bootstrap() {
     if (sessionResp.ok) {
       const session = await sessionResp.json();
       currentUser = session.user || 'user';
-      currentUserId = session.user_id || currentUserId;
+      currentUserId = String(session.user_id || currentUserId);
     }
   } catch (_) {}
   try {
