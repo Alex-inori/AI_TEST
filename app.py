@@ -816,6 +816,7 @@ class JobManager:
             run_as_user = _validate_linux_username(str(payload.get("user_id") or ""))
             log_path = str(payload.get("log_path") or "").strip()
             log_target = subprocess.DEVNULL
+            process_log_path_text = ""
             lock_settings: dict[str, Any] | None = None
             lock_cfgshell_cmd: list[str] | None = None
             if log_path:
@@ -824,11 +825,32 @@ class JobManager:
                 jobs_id = str(payload.get("jobs_id") or job_id)
                 safe_jobs_id = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in jobs_id)
                 process_log_path = Path(log_path).expanduser() / f"{safe_jobs_id}.log"
+                process_log_path_text = str(process_log_path)
+                subprocess.run(
+                    _wrap_command_for_user(["bash", "-lc", f": >> {shlex.quote(process_log_path_text)}"], run_as_user),
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    text=True,
+                )
                 try:
                     log_file = process_log_path.open("a", encoding="utf-8")
                 except Exception:
                     log_file = None
                 log_target = log_file if log_file is not None else subprocess.DEVNULL
+
+            def run_as_user_with_log(command_args: list[str]) -> int:
+                if process_log_path_text:
+                    wrapped = _wrap_command_for_user(
+                        ["bash", "-lc", f"{shlex.join(command_args)} >> {shlex.quote(process_log_path_text)} 2>&1"],
+                        run_as_user,
+                    )
+                    return subprocess.run(wrapped, text=True).returncode
+                return subprocess.run(
+                    _wrap_command_for_user(command_args, run_as_user),
+                    stdout=log_target,
+                    stderr=log_target,
+                    text=True,
+                ).returncode
 
             lock_settings = self._read_haps_settings()
             lock_cfgshell_cmd = list(lock_settings.get("HAPS_CONFPROSH_CMD") or [])
@@ -852,9 +874,7 @@ class JobManager:
                 if "HAPS100" in haps_platform:
                     db_load_cmd.append(hmf_txt)
                 self._log_stage_timestamp(log_file, "load_db", "start")
-                rc1 = subprocess.run(
-                    _wrap_command_for_user(db_load_cmd, run_as_user), stdout=log_target, stderr=log_target, text=True
-                ).returncode
+                rc1 = run_as_user_with_log(db_load_cmd)
                 self._log_stage_timestamp(log_file, "load_db", "end")
                 if rc1 != 0:
                     self._write_process_log(log_file, f"[HAPS_LOCK] HAPS_DB load failed, exit={rc1}")
@@ -893,12 +913,7 @@ class JobManager:
                     dedup_thread = threading.Thread(target=_collect_img_signature, daemon=True)
                     dedup_thread.start()
                     self._log_stage_timestamp(log_file, "load_img", "start")
-                    rc_img = subprocess.run(
-                        _wrap_command_for_user([*cfgshell_cmd, imgload_script, img_file], run_as_user),
-                        stdout=log_target,
-                        stderr=log_target,
-                        text=True,
-                    ).returncode
+                    rc_img = run_as_user_with_log([*cfgshell_cmd, imgload_script, img_file])
                     self._log_stage_timestamp(log_file, "load_img", "end")
                     dedup_thread.join()
                     if "signature" in dedup_result:
@@ -936,12 +951,7 @@ class JobManager:
                     return
 
                 self._log_stage_timestamp(log_file, "reset", "start")
-                rc2 = subprocess.run(
-                    _wrap_command_for_user([*cfgshell_cmd, reset_script], run_as_user),
-                    stdout=log_target,
-                    stderr=log_target,
-                    text=True,
-                ).returncode
+                rc2 = run_as_user_with_log([*cfgshell_cmd, reset_script])
                 self._log_stage_timestamp(log_file, "reset", "end")
                 if rc2 != 0:
                     self._write_process_log(log_file, f"[HAPS_LOCK] HAPS_ENV reset failed, exit={rc2}")
@@ -972,10 +982,12 @@ class JobManager:
                     return
                 job = self._jobs[job_id]
                 command = self._build_job_command(job.payload)
+                if process_log_path_text:
+                    command = f"{command} >> {shlex.quote(process_log_path_text)} 2>&1"
                 process = subprocess.Popen(
                     _wrap_command_for_user(["bash", "-lc", command], run_as_user),
-                    stdout=log_file if log_file is not None else subprocess.DEVNULL,
-                    stderr=log_file if log_file is not None else subprocess.DEVNULL,
+                    stdout=log_file if (log_file is not None and not process_log_path_text) else subprocess.DEVNULL,
+                    stderr=log_file if (log_file is not None and not process_log_path_text) else subprocess.DEVNULL,
                     text=True,
                 )
                 job.process = process
