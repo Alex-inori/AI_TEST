@@ -292,10 +292,13 @@ class UartStreamManager:
                     resolved_log_dir.mkdir(parents=True, exist_ok=True)
                     log_handle = uart_log_path.open("a", encoding="utf-8")
                 except Exception:
-                    fallback_dir = Path("/tmp/uart_logs")
-                    fallback_dir.mkdir(parents=True, exist_ok=True)
-                    uart_log_path = fallback_dir / f"{safe_jobs_id}{safe_device}.log"
-                    log_handle = uart_log_path.open("a", encoding="utf-8")
+                    try:
+                        fallback_dir = Path("/tmp/uart_logs")
+                        fallback_dir.mkdir(parents=True, exist_ok=True)
+                        uart_log_path = fallback_dir / f"{safe_jobs_id}{safe_device}.log"
+                        log_handle = uart_log_path.open("a", encoding="utf-8")
+                    except Exception:
+                        log_handle = None
                 self._uart_log_files[key] = log_handle
                 self._uart_log_locks[key] = threading.Lock()
                 self._uart_users[key] = str(run_as_user or "")
