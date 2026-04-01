@@ -1793,6 +1793,19 @@ def _require_session(request: Request) -> SessionRecord:
     fallback_user = get_system_user(request)
     return session_manager.issue(user_id=fallback_user_id, username=fallback_user)
 
+
+def _resolve_viewer_user_id(request: Request) -> str:
+    token = _session_token_from_request(request)
+    if token:
+        session = session_manager.resolve(token)
+        if session is not None:
+            return session.user_id
+    try:
+        return _validate_linux_username(get_system_user_id(request))
+    except ValueError:
+        # Keep backward compatibility for unauthenticated probes/deploy checks.
+        return get_system_user(None)
+
 @app.websocket("/ws/uart")
 async def ws_uart(websocket: WebSocket) -> None:
     token = (websocket.query_params.get("session_token") or "").strip()
@@ -1986,8 +1999,8 @@ def get_fs_entries(request: Request, path: str = "", mode: str = "file") -> dict
 
 @app.get("/api/jobs")
 def get_jobs(request: Request) -> dict[str, Any]:
-    session = _require_session(request)
-    return {"jobs": manager.list_jobs(viewer_user_id=session.user_id)}
+    viewer_user_id = _resolve_viewer_user_id(request)
+    return {"jobs": manager.list_jobs(viewer_user_id=viewer_user_id)}
 
 
 @app.get("/api/platform-options")
