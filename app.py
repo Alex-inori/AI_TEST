@@ -699,9 +699,29 @@ class JobManager:
             return
 
     @staticmethod
-    def _log_stage_timestamp(log_file: Any, stage: str, event: str) -> None:
+    def _log_stage_timestamp(
+        log_file: Any,
+        stage: str,
+        event: str,
+        *,
+        log_path: str = "",
+        run_as_user: str = "",
+    ) -> None:
         timestamp = datetime.now().isoformat(timespec="seconds")
-        JobManager._write_process_log(log_file, f"[HAPS_STAGE] stage={stage} event={event} ts={timestamp}")
+        message = f"[HAPS_STAGE] stage={stage} event={event} ts={timestamp}"
+        if log_file is not None:
+            JobManager._write_process_log(log_file, message)
+            return
+        if log_path and run_as_user:
+            subprocess.run(
+                _wrap_command_for_user(
+                    ["bash", "-lc", f"printf '%s\\n' {shlex.quote(message)} >> {shlex.quote(log_path)}"],
+                    run_as_user,
+                ),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                text=True,
+            )
 
     @staticmethod
     def _calculate_img_dedup_signature(file_path: str) -> tuple[str, str]:
@@ -910,9 +930,13 @@ print(json.dumps({"algo": algo, "signature": signature}))
                 db_load_cmd = [*cfgshell_cmd, db_load_script, database_path]
                 if "HAPS100" in haps_platform:
                     db_load_cmd.append(hmf_txt)
-                self._log_stage_timestamp(log_file, "load_db", "start")
+                self._log_stage_timestamp(
+                    log_file, "load_db", "start", log_path=process_log_path_text, run_as_user=run_as_user
+                )
                 rc1 = run_as_user_with_log(db_load_cmd)
-                self._log_stage_timestamp(log_file, "load_db", "end")
+                self._log_stage_timestamp(
+                    log_file, "load_db", "end", log_path=process_log_path_text, run_as_user=run_as_user
+                )
                 if rc1 != 0:
                     self._write_process_log(log_file, f"[HAPS_LOCK] HAPS_DB load failed, exit={rc1}")
                     with self._lock:
@@ -949,9 +973,13 @@ print(json.dumps({"algo": algo, "signature": signature}))
 
                     dedup_thread = threading.Thread(target=_collect_img_signature, daemon=True)
                     dedup_thread.start()
-                    self._log_stage_timestamp(log_file, "load_img", "start")
+                    self._log_stage_timestamp(
+                        log_file, "load_img", "start", log_path=process_log_path_text, run_as_user=run_as_user
+                    )
                     rc_img = run_as_user_with_log([*cfgshell_cmd, imgload_script, img_file])
-                    self._log_stage_timestamp(log_file, "load_img", "end")
+                    self._log_stage_timestamp(
+                        log_file, "load_img", "end", log_path=process_log_path_text, run_as_user=run_as_user
+                    )
                     dedup_thread.join()
                     if "signature" in dedup_result:
                         signature = dedup_result["signature"]
@@ -987,9 +1015,13 @@ print(json.dumps({"algo": algo, "signature": signature}))
                 if not self._wait_prepare_delay(job_id, run_token, prepare_delay):
                     return
 
-                self._log_stage_timestamp(log_file, "reset", "start")
+                self._log_stage_timestamp(
+                    log_file, "reset", "start", log_path=process_log_path_text, run_as_user=run_as_user
+                )
                 rc2 = run_as_user_with_log([*cfgshell_cmd, reset_script])
-                self._log_stage_timestamp(log_file, "reset", "end")
+                self._log_stage_timestamp(
+                    log_file, "reset", "end", log_path=process_log_path_text, run_as_user=run_as_user
+                )
                 if rc2 != 0:
                     self._write_process_log(log_file, f"[HAPS_LOCK] HAPS_ENV reset failed, exit={rc2}")
                     with self._lock:
