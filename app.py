@@ -373,21 +373,26 @@ class UartStreamManager:
 
     def _read_serial_worker(self, job_id: str, device: str, stop_event: threading.Event) -> None:
         if serial is None:
+            ts = datetime.now().isoformat(timespec="seconds")
+            message = "pyserial is not installed on server"
+            self._write_uart_log(job_id, device, f"[{ts}] {message}")
             self._append_and_broadcast({
                 "type": "status",
                 "job_id": job_id,
                 "device": device,
-                "line": "pyserial is not installed on server",
-                "ts": datetime.now().isoformat(timespec="seconds"),
+                "line": message,
+                "ts": ts,
             })
             return
 
+        open_ts = datetime.now().isoformat(timespec="seconds")
+        self._write_uart_log(job_id, device, f"[{open_ts}] [{job_id}] opening {device}")
         self._append_and_broadcast({
             "type": "status",
             "job_id": job_id,
             "device": device,
             "line": f"[{job_id}] opening {device}",
-            "ts": datetime.now().isoformat(timespec="seconds"),
+            "ts": open_ts,
         })
         try:
             open_kwargs = {"baudrate": 115200, "timeout": 0.5, "exclusive": True}
@@ -409,12 +414,15 @@ class UartStreamManager:
                         raise
                     if not warned_busy:
                         warned_busy = True
+                        busy_ts = datetime.now().isoformat(timespec="seconds")
+                        busy_message = f"[{job_id}] waiting for UART release: {open_exc}"
+                        self._write_uart_log(job_id, device, f"[{busy_ts}] {busy_message}")
                         self._append_and_broadcast({
                             "type": "status",
                             "job_id": job_id,
                             "device": device,
-                            "line": f"[{job_id}] waiting for UART release: {open_exc}",
-                            "ts": datetime.now().isoformat(timespec="seconds"),
+                            "line": busy_message,
+                            "ts": busy_ts,
                         })
                     time.sleep(0.3)
 
@@ -435,6 +443,7 @@ class UartStreamManager:
                     "line": f"[{job_id}] {device} locked exclusively",
                     "ts": datetime.now().isoformat(timespec="seconds"),
                 })
+                self._write_uart_log(job_id, device, f"[{datetime.now().isoformat(timespec='seconds')}] [{job_id}] {device} locked exclusively")
                 with self._lock:
                     self._writers[(job_id, device)] = uart
                     self._writer_locks[(job_id, device)] = threading.Lock()
@@ -465,12 +474,15 @@ class UartStreamManager:
                     })
                     self._write_uart_log(job_id, device, f"[{ts}] RX> {line}")
         except Exception as exc:
+            fail_ts = datetime.now().isoformat(timespec="seconds")
+            fail_message = f"[{job_id}] serial read failed: {exc}"
+            self._write_uart_log(job_id, device, f"[{fail_ts}] {fail_message}")
             self._append_and_broadcast({
                 "type": "status",
                 "job_id": job_id,
                 "device": device,
-                "line": f"[{job_id}] serial read failed: {exc}",
-                "ts": datetime.now().isoformat(timespec="seconds"),
+                "line": fail_message,
+                "ts": fail_ts,
             })
         finally:
             with self._lock:
