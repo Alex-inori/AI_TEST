@@ -5,6 +5,7 @@ import asyncio
 import os
 import pwd
 import socket
+import secrets
 import subprocess
 import threading
 import uuid
@@ -28,7 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -123,6 +124,11 @@ def load_ui_limits() -> dict[str, int]:
             cfg_entries.get("RECENT_JOBS_MAX_NUM"), DEFAULT_RECENT_JOBS_MAX_NUM
         ),
     }
+
+
+def load_service_base_url() -> str:
+    cfg_entries = _load_cfg_entries(required=False)
+    return str(cfg_entries.get("SERVICE_BASE_URL") or "").strip().rstrip("/")
 
 
 def load_terminal_path() -> str:
@@ -713,10 +719,12 @@ class JobManager:
         signature = f"{file_size:016x}-{head_crc:08x}-{tail_crc:08x}"
         return algo, signature
 
-    def _acquire_device_lock(self, job_id: str, payload: dict[str, Any], cfgshell_cmd: list[str], log_file: Any) -> None:
+    def _acquire_device_lock(
+        self, job_id: str, payload: dict[str, Any], cfgshell_cmd: list[str], log_file: Any, run_as_user: str
+    ) -> None:
         master_fd, slave_fd = pty.openpty()
         process = subprocess.Popen(
-            cfgshell_cmd,
+            _wrap_command_for_user(cfgshell_cmd, run_as_user),
             stdin=slave_fd,
             stdout=slave_fd,
             stderr=slave_fd,
@@ -808,6 +816,7 @@ class JobManager:
             log_path = str(payload.get("log_path") or "").strip()
             lock_settings: dict[str, Any] | None = None
             lock_cfgshell_cmd: list[str] | None = None
+            run_as_user = _validate_linux_username(str(payload.get("user_id") or ""))
             if log_path:
                 log_dir = Path(log_path).expanduser()
                 log_dir.mkdir(parents=True, exist_ok=True)
@@ -838,7 +847,9 @@ class JobManager:
                 if "HAPS100" in haps_platform:
                     db_load_cmd.append(hmf_txt)
                 self._log_stage_timestamp(log_file, "load_db", "start")
-                rc1 = subprocess.run(db_load_cmd, stdout=log_file, stderr=log_file, text=True).returncode
+                rc1 = subprocess.run(
+                    _wrap_command_for_user(db_load_cmd, run_as_user), stdout=log_file, stderr=log_file, text=True
+                ).returncode
                 self._log_stage_timestamp(log_file, "load_db", "end")
                 if rc1 != 0:
                     self._write_process_log(log_file, f"[HAPS_LOCK] HAPS_DB load failed, exit={rc1}")
@@ -877,7 +888,12 @@ class JobManager:
                     dedup_thread = threading.Thread(target=_collect_img_signature, daemon=True)
                     dedup_thread.start()
                     self._log_stage_timestamp(log_file, "load_img", "start")
-                    rc_img = subprocess.run([*cfgshell_cmd, imgload_script, img_file], stdout=log_file, stderr=log_file, text=True).returncode
+                    rc_img = subprocess.run(
+                        _wrap_command_for_user([*cfgshell_cmd, imgload_script, img_file], run_as_user),
+                        stdout=log_file,
+                        stderr=log_file,
+                        text=True,
+                    ).returncode
                     self._log_stage_timestamp(log_file, "load_img", "end")
                     dedup_thread.join()
                     if "signature" in dedup_result:
@@ -915,7 +931,12 @@ class JobManager:
                     return
 
                 self._log_stage_timestamp(log_file, "reset", "start")
-                rc2 = subprocess.run([*cfgshell_cmd, reset_script], stdout=log_file, stderr=log_file, text=True).returncode
+                rc2 = subprocess.run(
+                    _wrap_command_for_user([*cfgshell_cmd, reset_script], run_as_user),
+                    stdout=log_file,
+                    stderr=log_file,
+                    text=True,
+                ).returncode
                 self._log_stage_timestamp(log_file, "reset", "end")
                 if rc2 != 0:
                     self._write_process_log(log_file, f"[HAPS_LOCK] HAPS_ENV reset failed, exit={rc2}")
@@ -936,7 +957,7 @@ class JobManager:
 
             # cfgshell 不支持并行启动：先完成 prepare，再在 HAPS_RDY 阶段进行设备 lock。
             cfgshell_cmd_for_lock = lock_cfgshell_cmd or []
-            self._acquire_device_lock(job_id, payload, cfgshell_cmd_for_lock, log_file)
+            self._acquire_device_lock(job_id, payload, cfgshell_cmd_for_lock, log_file, run_as_user=run_as_user)
             lock_acquired = True
 
             with self._lock:
@@ -947,7 +968,7 @@ class JobManager:
                 job = self._jobs[job_id]
                 command = self._build_job_command(job.payload)
                 process = subprocess.Popen(
-                    ["bash", "-lc", command],
+                    _wrap_command_for_user(["bash", "-lc", command], run_as_user),
                     stdout=log_file if log_file is not None else subprocess.DEVNULL,
                     stderr=log_file if log_file is not None else subprocess.DEVNULL,
                     text=True,
@@ -1502,6 +1523,80 @@ def _uid_to_username(uid: int | None) -> str | None:
         return None
 
 
+def _validate_linux_username(username: str) -> str:
+    candidate = (username or "").strip()
+    if not re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", candidate):
+        raise ValueError(f"invalid linux username: {candidate!r}")
+    try:
+        pwd.getpwnam(candidate)
+    except KeyError as exc:
+        raise ValueError(f"linux user not found: {candidate}") from exc
+    return candidate
+
+
+def _sudo_prefix_for_user(run_as_user: str) -> list[str]:
+    service_user = get_system_user(None)
+    if run_as_user == service_user:
+        return []
+    return ["sudo", "-n", "-u", run_as_user, "-H"]
+
+
+def _wrap_command_for_user(command: list[str], run_as_user: str) -> list[str]:
+    return [*_sudo_prefix_for_user(run_as_user), *command]
+
+
+@dataclass
+class SessionRecord:
+    token: str
+    user_id: str
+    username: str
+    created_at: float
+    expires_at: float
+
+
+class SessionManager:
+    def __init__(self, ttl_seconds: int = 12 * 60 * 60) -> None:
+        self._ttl_seconds = ttl_seconds
+        self._sessions: dict[str, SessionRecord] = {}
+        self._lock = threading.Lock()
+
+    def _cleanup(self, now: float) -> None:
+        expired = [token for token, record in self._sessions.items() if record.expires_at <= now]
+        for token in expired:
+            self._sessions.pop(token, None)
+
+    def issue(self, user_id: str, username: str, reuse_token: str | None = None) -> SessionRecord:
+        now = time.time()
+        with self._lock:
+            self._cleanup(now)
+            if reuse_token:
+                existing = self._sessions.get(reuse_token)
+                if existing and existing.expires_at > now and existing.user_id == user_id:
+                    existing.expires_at = now + self._ttl_seconds
+                    return existing
+            token = secrets.token_urlsafe(32)
+            record = SessionRecord(
+                token=token,
+                user_id=str(user_id),
+                username=str(username),
+                created_at=now,
+                expires_at=now + self._ttl_seconds,
+            )
+            self._sessions[token] = record
+            return record
+
+    def resolve(self, token: str | None) -> SessionRecord | None:
+        if not token:
+            return None
+        now = time.time()
+        with self._lock:
+            self._cleanup(now)
+            session = self._sessions.get(token)
+            if session is None or session.expires_at <= now:
+                return None
+            return session
+
+
 def get_system_user_id(request: Request | None = None) -> str:
     """Resolve stable user identity based on linux login name (whoami style)."""
     if request is not None:
@@ -1618,6 +1713,9 @@ app = FastAPI(title="HAPS Jobs Console Platform")
 app.mount("/static", StaticFiles(directory=APP_ROOT / "static"), name="static")
 uart_stream_manager = UartStreamManager()
 manager = JobManager(uart_stream_manager)
+session_manager = SessionManager()
+SESSION_HEADER = "x-session-token"
+SESSION_COOKIE = "cfgshell_session"
 
 
 @app.on_event("startup")
@@ -1629,8 +1727,28 @@ async def _on_startup() -> None:
 def index() -> FileResponse:
     return FileResponse(APP_ROOT / "static" / "index.html")
 
+
+def _session_token_from_request(request: Request) -> str:
+    header_token = (request.headers.get(SESSION_HEADER) or "").strip()
+    if header_token:
+        return header_token
+    return (request.cookies.get(SESSION_COOKIE) or "").strip()
+
+
+def _require_session(request: Request) -> SessionRecord:
+    token = _session_token_from_request(request)
+    session = session_manager.resolve(token)
+    if session is None:
+        raise HTTPException(status_code=401, detail="invalid or expired session")
+    return session
+
 @app.websocket("/ws/uart")
 async def ws_uart(websocket: WebSocket) -> None:
+    token = (websocket.query_params.get("session_token") or "").strip()
+    session = session_manager.resolve(token)
+    if session is None:
+        await websocket.close(code=1008)
+        return
     await websocket.accept()
     client_key = websocket.query_params.get("client_id") or "anonymous"
     replaced = uart_stream_manager.register(websocket, client_key)
@@ -1661,6 +1779,17 @@ async def ws_uart(websocket: WebSocket) -> None:
                     "ts": datetime.now().isoformat(timespec="seconds"),
                 })
                 continue
+            job_list = manager.list_jobs(viewer_user_id=session.user_id)
+            has_access = any(str(item.get("id")) == job_id for item in job_list)
+            if not has_access:
+                await websocket.send_json({
+                    "type": "status",
+                    "job_id": job_id,
+                    "device": device,
+                    "line": "UART input ignored: permission denied",
+                    "ts": datetime.now().isoformat(timespec="seconds"),
+                })
+                continue
             ok, detail = uart_stream_manager.write_input(job_id, device, content, append_newline=append_newline)
             if not ok:
                 await websocket.send_json({
@@ -1679,81 +1808,135 @@ async def ws_uart(websocket: WebSocket) -> None:
 
 
 @app.get("/api/session")
-def get_session(request: Request) -> dict[str, str]:
-    return {
-        "user": get_system_user(request),
-        "user_id": get_system_user_id(request),
-    }
+def get_session(request: Request) -> JSONResponse:
+    user = get_system_user(request)
+    try:
+        user_id = _validate_linux_username(get_system_user_id(request))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    current_token = _session_token_from_request(request)
+    session = session_manager.issue(user_id=user_id, username=user, reuse_token=current_token or None)
+    response = JSONResponse(
+        {
+            "user": session.username,
+            "user_id": session.user_id,
+            "session_token": session.token,
+        }
+    )
+    response.set_cookie(
+        key=SESSION_COOKIE,
+        value=session.token,
+        httponly=True,
+        samesite="lax",
+        max_age=12 * 60 * 60,
+    )
+    return response
 
 
 @app.get("/api/client-config")
-def get_client_config() -> dict[str, int]:
-    return load_ui_limits()
+def get_client_config() -> dict[str, Any]:
+    limits = load_ui_limits()
+    limits["service_base_url"] = load_service_base_url()
+    return limits
+
+
+def _run_json_python_as_user(run_as_user: str, script: str, args: list[str]) -> dict[str, Any]:
+    command = _wrap_command_for_user(["python3", "-c", script, *args], run_as_user)
+    result = subprocess.run(command, capture_output=True, text=True)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "permission denied").strip()
+        raise HTTPException(status_code=403, detail=detail)
+    try:
+        return json.loads(result.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="invalid filesystem response") from exc
+
+
+def _list_directories_as_user(run_as_user: str) -> dict[str, list[str]]:
+    script = """
+import json
+import pathlib
+import pwd
+
+home = pathlib.Path(pwd.getpwuid(__import__("os").getuid()).pw_dir)
+bases = [home, pathlib.Path.cwd()]
+found = []
+seen = set()
+limit = 20
+for base in bases:
+    if not base.exists() or not base.is_dir():
+        continue
+    for item in [base, *sorted(base.iterdir())]:
+        if not item.is_dir():
+            continue
+        text = str(item)
+        if text not in seen:
+            seen.add(text)
+            found.append(text)
+        if len(found) >= limit:
+            break
+    if len(found) >= limit:
+        break
+print(json.dumps({"directories": found[:limit]}))
+"""
+    return _run_json_python_as_user(run_as_user, script, [])
+
+
+def _list_fs_entries_as_user(run_as_user: str, path: str, mode: str) -> dict[str, Any]:
+    script = """
+import json
+import os
+import pathlib
+import pwd
+import sys
+
+target_raw = sys.argv[1]
+mode = sys.argv[2]
+home = pathlib.Path(pwd.getpwuid(os.getuid()).pw_dir)
+target = pathlib.Path(target_raw).expanduser() if target_raw else home
+try:
+    resolved = target.resolve()
+except OSError:
+    print(json.dumps({"error": "invalid path"}))
+    raise SystemExit(2)
+if (not resolved.exists()) or (not resolved.is_dir()):
+    print(json.dumps({"error": "path is not a directory"}))
+    raise SystemExit(2)
+entries = []
+for entry in sorted(resolved.iterdir(), key=lambda item: (not item.is_dir(), item.name.lower())):
+    if entry.is_dir():
+        entries.append({"name": entry.name, "path": str(entry), "type": "directory"})
+    elif mode == "file" and entry.is_file():
+        entries.append({"name": entry.name, "path": str(entry), "type": "file"})
+    if len(entries) >= 200:
+        break
+parent = str(resolved.parent) if resolved.parent != resolved else ""
+print(json.dumps({"cwd": str(resolved), "parent": parent, "mode": mode, "entries": entries}))
+"""
+    result = _run_json_python_as_user(run_as_user, script, [path, mode])
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=str(result.get("error")))
+    return result
 
 
 
 
 @app.get("/api/directories")
-def get_directories() -> dict[str, list[str]]:
-    bases = [Path.home(), APP_ROOT]
-    found: list[str] = []
-    for base in bases:
-        if not base.exists() or not base.is_dir():
-            continue
-        found.append(str(base))
-        for child in sorted(base.iterdir()):
-            if child.is_dir():
-                found.append(str(child))
-            if len(found) >= 20:
-                break
-        if len(found) >= 20:
-            break
-    # de-duplicate while keeping order
-    seen = set()
-    dedup = []
-    for item in found:
-        if item not in seen:
-            seen.add(item)
-            dedup.append(item)
-    return {"directories": dedup[:20]}
+def get_directories(request: Request) -> dict[str, list[str]]:
+    session = _require_session(request)
+    return _list_directories_as_user(session.user_id)
 
 
 @app.get("/api/fs")
-def get_fs_entries(path: str = "", mode: str = "file") -> dict[str, Any]:
-    target = Path(path).expanduser() if path else Path.home()
-    try:
-        resolved = target.resolve()
-    except OSError:
-        raise HTTPException(status_code=400, detail="invalid path")
-
-    if not resolved.exists() or not resolved.is_dir():
-        raise HTTPException(status_code=400, detail="path is not a directory")
-
-    entries: list[dict[str, str]] = []
-    try:
-        for entry in sorted(resolved.iterdir(), key=lambda item: (not item.is_dir(), item.name.lower())):
-            if entry.is_dir():
-                entries.append({"name": entry.name, "path": str(entry), "type": "directory"})
-            elif mode == "file" and entry.is_file():
-                entries.append({"name": entry.name, "path": str(entry), "type": "file"})
-            if len(entries) >= 200:
-                break
-    except PermissionError:
-        raise HTTPException(status_code=403, detail="permission denied")
-
-    parent = str(resolved.parent) if resolved.parent != resolved else ""
-    return {
-        "cwd": str(resolved),
-        "parent": parent,
-        "mode": mode,
-        "entries": entries,
-    }
+def get_fs_entries(request: Request, path: str = "", mode: str = "file") -> dict[str, Any]:
+    session = _require_session(request)
+    return _list_fs_entries_as_user(session.user_id, path, mode)
 
 
 @app.get("/api/jobs")
 def get_jobs(request: Request) -> dict[str, Any]:
-    viewer_user_id = get_system_user_id(request)
-    return {"jobs": manager.list_jobs(viewer_user_id=viewer_user_id)}
+    session = _require_session(request)
+    return {"jobs": manager.list_jobs(viewer_user_id=session.user_id)}
 
 
 @app.get("/api/platform-options")
@@ -1777,7 +1960,8 @@ def submit_jobs(payload: SubmitJobsRequest, request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=f"jobs count cannot exceed {create_jobs_max_num}")
 
     created: list[dict[str, Any]] = []
-    system_user = get_system_user_id(request)
+    session = _require_session(request)
+    system_user = session.user_id
     used_uart_paths: set[str] = set()
     try:
         settings = load_haps_settings()
@@ -1818,7 +2002,12 @@ def submit_jobs(payload: SubmitJobsRequest, request: Request) -> dict[str, Any]:
 
 
 @app.post("/api/jobs/{job_id}/stop")
-def stop_job(job_id: str) -> dict[str, Any]:
+def stop_job(job_id: str, request: Request) -> dict[str, Any]:
+    viewer_user_id = _require_session(request).user_id
+    all_jobs = manager.list_jobs(viewer_user_id=viewer_user_id)
+    target = next((job for job in all_jobs if str(job.get("id")) == str(job_id)), None)
+    if target is None:
+        raise HTTPException(status_code=404, detail="job not found")
     try:
         job = manager.stop(job_id)
     except KeyError as exc:
@@ -1828,12 +2017,13 @@ def stop_job(job_id: str) -> dict[str, Any]:
 
 @app.post("/api/jobs/{job_id}/open-terminal")
 def open_job_terminal(job_id: str, request: Request) -> dict[str, Any]:
-    viewer_user_id = get_system_user_id(request)
+    viewer_user_id = _require_session(request).user_id
     all_jobs = manager.list_jobs(viewer_user_id=viewer_user_id)
     target = next((job for job in all_jobs if str(job.get("id")) == str(job_id)), None)
     if target is None:
         raise HTTPException(status_code=404, detail="job not found")
     payload = target.get("payload") or {}
+    run_as_user = _validate_linux_username(str(payload.get("user_id") or viewer_user_id))
     if str(payload.get("user_id") or "") != str(viewer_user_id):
         raise HTTPException(status_code=403, detail="only owner can open terminal")
     if not manager._is_running_status(str(target.get("status") or "")):
@@ -1853,7 +2043,7 @@ def open_job_terminal(job_id: str, request: Request) -> dict[str, Any]:
 
     try:
         subprocess.Popen(  # noqa: S603
-            [terminal_path],  # noqa: S607
+            _wrap_command_for_user([terminal_path], run_as_user),  # noqa: S607
             cwd=launch_cwd,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
@@ -1868,7 +2058,7 @@ def open_job_terminal(job_id: str, request: Request) -> dict[str, Any]:
 
 @app.post("/api/jobs/{job_id}/confirm-stop")
 def confirm_stop(job_id: str, request: Request) -> dict[str, Any]:
-    user_id = get_system_user_id(request)
+    user_id = _require_session(request).user_id
     try:
         job = manager.confirm_stop(job_id, user_id)
     except KeyError as exc:
@@ -1880,7 +2070,7 @@ def confirm_stop(job_id: str, request: Request) -> dict[str, Any]:
 
 @app.post("/api/jobs/{job_id}/stop-and-resubmit")
 def stop_and_resubmit(job_id: str, request: Request) -> dict[str, Any]:
-    user_id = get_system_user_id(request)
+    user_id = _require_session(request).user_id
     try:
         job = manager.stop_and_resubmit(job_id, user_id)
     except KeyError as exc:
@@ -1893,12 +2083,14 @@ def stop_and_resubmit(job_id: str, request: Request) -> dict[str, Any]:
 
 
 @app.get("/api/waiting-jobs")
-def get_waiting_jobs() -> dict[str, Any]:
+def get_waiting_jobs(request: Request) -> dict[str, Any]:
+    _require_session(request)
     return {"jobs": manager.list_waiting_jobs()}
 
 
 @app.delete("/api/waiting-jobs/{waiting_id}")
-def cancel_waiting_job(waiting_id: str, user_id: str) -> dict[str, bool]:
+def cancel_waiting_job(waiting_id: str, request: Request) -> dict[str, bool]:
+    user_id = _require_session(request).user_id
     try:
         manager.cancel_waiting(waiting_id, user_id)
     except KeyError as exc:

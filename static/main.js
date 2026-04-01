@@ -19,16 +19,28 @@ let uartReconnectTimer = null;
 let hapsPlatforms = [];
 let uartDevices = [];
 let servicePort = 8000;
+let serviceBase = '';
 let createJobsMaxNum = 5;
+let sessionToken = '';
 
 function serviceBaseUrl() {
-  return `http://127.0.0.1:${servicePort}`;
+  if (serviceBase) return serviceBase;
+  return '';
 }
 function wsBaseUrl() {
-  return `ws://127.0.0.1:${servicePort}`;
+  const apiBase = serviceBaseUrl();
+  if (!apiBase) return `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`;
+  if (apiBase.startsWith('https://')) return `wss://${apiBase.slice('https://'.length)}`;
+  if (apiBase.startsWith('http://')) return `ws://${apiBase.slice('http://'.length)}`;
+  return `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`;
 }
 function buildApiUrl(path) {
   return `${serviceBaseUrl()}${path}`;
+}
+function getSessionHeaders(extra = {}) {
+  const headers = { ...extra };
+  if (sessionToken) headers['X-Session-Token'] = sessionToken;
+  return headers;
 }
 function trimOldestCreateJobsIfNeeded(limit = createJobsMaxNum) {
   const max = Number.parseInt(limit, 10);
@@ -161,7 +173,7 @@ function connectUartSocket() {
     uartReconnectTimer = null;
   }
   const clientId = `${currentUserId || '0'}-${window.location.pathname}`;
-  const socket = new WebSocket(`${wsBaseUrl()}/ws/uart?client_id=${encodeURIComponent(clientId)}`);
+  const socket = new WebSocket(`${wsBaseUrl()}/ws/uart?client_id=${encodeURIComponent(clientId)}&session_token=${encodeURIComponent(sessionToken || '')}`);
   uartSocket = socket;
   socket.onopen = () => {
     if (uartSocket !== socket) return;
@@ -432,7 +444,7 @@ function showStopConfirmModal(job) {
   window.addEventListener('scroll', modal.handleViewportChange, true);
   modal.cancelBtn.onclick = () => closeStopConfirmModal();
   modal.okBtn.onclick = async () => {
-    const response = await fetch(buildApiUrl(`/api/jobs/${jobId}/confirm-stop`), { method: 'POST' });
+    const response = await fetch(buildApiUrl(`/api/jobs/${jobId}/confirm-stop`), { method: 'POST', headers: getSessionHeaders() });
     if (!response.ok) {
       alert(`Confirm Fail: ${await response.text()}`);
       return;
@@ -533,7 +545,7 @@ async function loadFsEntriesWithFallback(path, mode) {
 }
 async function loadFsEntries(path, mode) {
   const url = buildApiUrl(`/api/fs?path=${encodeURIComponent(path || '')}&mode=${encodeURIComponent(mode)}`);
-  const response = await fetch(url);
+  const response = await fetch(url, { headers: getSessionHeaders() });
   if (!response.ok) {
     const text = await response.text();
     throw new Error(text || 'load failed');
@@ -800,7 +812,7 @@ async function submitJobs(event) {
   }
   const response = await fetch(buildApiUrl('/api/jobs'), {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getSessionHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ jobs }),
   });
   if (!response.ok) return alert(`Submit failed: ${await response.text()}`);
@@ -812,20 +824,20 @@ async function submitJobs(event) {
 }
 async function finishJob(jobId) {
   if (!window.confirm('Finish this running job?')) return;
-  const response = await fetch(buildApiUrl(`/api/jobs/${jobId}/stop`), { method: 'POST' });
+  const response = await fetch(buildApiUrl(`/api/jobs/${jobId}/stop`), { method: 'POST', headers: getSessionHeaders() });
   if (!response.ok) return alert('Finish failed');
   refreshRecentJobs();
   refreshWaitingJobs();
 }
 async function stopAndResubmitJob(jobId) {
   if (!window.confirm('Stop current submit and resubmit this job?')) return;
-  const response = await fetch(buildApiUrl(`/api/jobs/${jobId}/stop-and-resubmit`), { method: 'POST' });
+  const response = await fetch(buildApiUrl(`/api/jobs/${jobId}/stop-and-resubmit`), { method: 'POST', headers: getSessionHeaders() });
   if (!response.ok) return alert(`Stop and Resubmit failed: ${await response.text()}`);
   refreshRecentJobs();
   refreshWaitingJobs();
 }
 async function openRunningJobTerminal(jobId) {
-  const response = await fetch(buildApiUrl(`/api/jobs/${jobId}/open-terminal`), { method: 'POST' });
+  const response = await fetch(buildApiUrl(`/api/jobs/${jobId}/open-terminal`), { method: 'POST', headers: getSessionHeaders() });
   if (!response.ok) {
     try {
       const detail = await response.text();
@@ -853,7 +865,7 @@ function buildLeftTimeText(job, payload) {
   return { text: `${leftMinutes} min`, isLongtime: false };
 }
 async function cancelWaitingJob(waitingId) {
-  const response = await fetch(buildApiUrl(`/api/waiting-jobs/${waitingId}?user_id=${encodeURIComponent(currentUserId)}`), { method: 'DELETE' });
+  const response = await fetch(buildApiUrl(`/api/waiting-jobs/${waitingId}`), { method: 'DELETE', headers: getSessionHeaders() });
   if (!response.ok) return alert(`Cancel failed: ${await response.text()}`);
   refreshWaitingJobs();
 }
@@ -889,7 +901,7 @@ function renderWaitingJobs(jobs) {
   });
 }
 async function refreshWaitingJobs() {
-  const response = await fetch(buildApiUrl('/api/waiting-jobs'));
+  const response = await fetch(buildApiUrl('/api/waiting-jobs'), { headers: getSessionHeaders() });
   if (!response.ok) return;
   const data = await response.json();
   renderWaitingJobs(data.jobs || []);
@@ -1009,7 +1021,7 @@ function renderRecentJobs(jobs) {
   });
 }
 async function refreshRecentJobs() {
-  const response = await fetch(buildApiUrl('/api/jobs'));
+  const response = await fetch(buildApiUrl('/api/jobs'), { headers: getSessionHeaders() });
   if (!response.ok) return;
   const data = await response.json();
   const jobs = data.jobs || [];
@@ -1032,8 +1044,16 @@ async function bootstrap() {
     const cfgResp = await fetch('/api/client-config');
     if (cfgResp.ok) {
       const cfg = await cfgResp.json();
-      const parsedPort = Number.parseInt(cfg.service_port, 10);
-      if (Number.isFinite(parsedPort) && parsedPort > 0) servicePort = parsedPort;
+      const backendBase = String(cfg.service_base_url || '').trim();
+      if (backendBase) {
+        serviceBase = backendBase.replace(/\/+$/, '');
+      } else {
+        const parsedPort = Number.parseInt(cfg.service_port, 10);
+        const currentPort = Number.parseInt(window.location.port || (window.location.protocol === 'https:' ? '443' : '80'), 10);
+        if (Number.isFinite(parsedPort) && parsedPort > 0 && parsedPort !== currentPort) {
+          serviceBase = `${window.location.protocol}//${window.location.hostname}:${parsedPort}`;
+        }
+      }
       const parsedCreateMax = Number.parseInt(cfg.create_jobs_max_num, 10);
       if (Number.isFinite(parsedCreateMax) && parsedCreateMax > 0) createJobsMaxNum = parsedCreateMax;
     }
@@ -1044,10 +1064,11 @@ async function bootstrap() {
       const session = await sessionResp.json();
       currentUser = session.user || 'user';
       currentUserId = String(session.user_id || currentUserId);
+      sessionToken = String(session.session_token || '');
     }
   } catch (_) {}
   try {
-    const platformResp = await fetch(buildApiUrl('/api/platform-options'));
+    const platformResp = await fetch(buildApiUrl('/api/platform-options'), { headers: getSessionHeaders() });
     if (!platformResp.ok) {
       alert(`Failed to load HAPS platform config: ${await platformResp.text()}`);
       return;

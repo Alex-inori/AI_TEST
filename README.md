@@ -124,5 +124,13 @@ pip install fastapi uvicorn pyserial
 ## cfgshell.conf 可选配置
 
 - `SERVICE_PORT`：前端请求后端服务端口。未配置时默认使用 `127.0.0.1:8000`。
+- `SERVICE_BASE_URL`：可选。用于前后端分离部署时指定后端地址（例如 `https://api.example.com`），前端会优先使用该地址。
 - `CREATE_JOBS_MAX_NUM`：New Jobs 页面允许创建/提交的最大 Job 数量。未配置时默认 `5`。
 - `RECENT_JOBS_MAX_NUM`：Recent Jobs 最多保留显示条数。未配置时默认 `10`。
+
+### 会话与权限说明
+
+- 前端首次调用 `/api/session` 会拿到 `session_token`，后续请求通过 `X-Session-Token` 传递；
+- 后端会把会话里的 Linux 用户名作为执行身份；当服务账号具备 sudo 权限时，会用 `sudo -u <session_user>` 执行 Terminal/Job/文件浏览相关操作；
+- 删除 waiting job、Finish、Stop and Resubmit、Open Terminal、UART 输入等敏感操作都在后端强制校验会话归属；
+- 不再接受前端通过 query 参数传入 `user_id` 进行权限判断，避免会话/权限穿透。
