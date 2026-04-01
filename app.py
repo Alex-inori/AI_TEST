@@ -777,12 +777,36 @@ print(json.dumps({"algo": algo, "signature": signature}))
             raise RuntimeError("SW_IMG_CHECK parse failed") from exc
 
     def _acquire_device_lock(
-        self, job_id: str, payload: dict[str, Any], cfgshell_cmd: list[str], log_file: Any, run_as_user: str
+        self,
+        job_id: str,
+        payload: dict[str, Any],
+        cfgshell_cmd: list[str],
+        log_file: Any,
+        run_as_user: str,
+        log_path: str = "",
+        log_owner_user: str = "",
     ) -> None:
+        def lock_log(message: str) -> None:
+            if log_file is not None:
+                self._write_process_log(log_file, message)
+                return
+            if log_path and log_owner_user:
+                subprocess.run(
+                    _wrap_command_for_user(
+                        ["bash", "-lc", f"printf '%s\\n' {shlex.quote(message)} >> {shlex.quote(log_path)}"],
+                        log_owner_user,
+                    ),
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    text=True,
+                )
+
         service_user = get_system_user(None)
         attempts = [run_as_user]
         if service_user and service_user not in attempts:
             attempts.append(service_user)
+        if "root" not in attempts:
+            attempts.append("root")
         last_error: Exception | None = None
         for lock_user in attempts:
             master_fd, slave_fd = pty.openpty()
@@ -804,11 +828,10 @@ print(json.dumps({"algo": algo, "signature": signature}))
                 if not handle:
                     raise RuntimeError(f"cfg_open failed, output={open_output!r}")
                 lock_scan_output = self._cfgshell_eval(process, master_fd, "cfg_scan")
-                self._write_process_log(
-                    log_file,
+                lock_log(
                     f"[HAPS_LOCK] job={job_id} platform={payload.get('haps_platform')} device={device_id} handle={handle} lock_user={lock_user}",
                 )
-                self._write_process_log(log_file, f"[HAPS_LOCK] cfg_scan(after open): {lock_scan_output}")
+                lock_log(f"[HAPS_LOCK] cfg_scan(after open): {lock_scan_output}")
                 with self._lock:
                     self._haps_lock_sessions[job_id] = HapsLockSession(
                         process=process, device_id=device_id, handle=handle, io_fd=master_fd
@@ -829,7 +852,7 @@ print(json.dumps({"algo": algo, "signature": signature}))
                     os.close(master_fd)
                 except Exception:
                     pass
-                self._write_process_log(log_file, f"[HAPS_LOCK] lock attempt failed for user={lock_user}: {exc}")
+                lock_log(f"[HAPS_LOCK] lock attempt failed for user={lock_user}: {exc}")
         if last_error is not None:
             raise last_error
 
@@ -1070,7 +1093,15 @@ print(json.dumps({"algo": algo, "signature": signature}))
 
             # cfgshell 不支持并行启动：先完成 prepare，再在 HAPS_RDY 阶段进行设备 lock。
             cfgshell_cmd_for_lock = lock_cfgshell_cmd or []
-            self._acquire_device_lock(job_id, payload, cfgshell_cmd_for_lock, log_file, run_as_user=run_as_user)
+            self._acquire_device_lock(
+                job_id,
+                payload,
+                cfgshell_cmd_for_lock,
+                log_file,
+                run_as_user=run_as_user,
+                log_path=process_log_path_text,
+                log_owner_user=run_as_user,
+            )
             lock_acquired = True
 
             with self._lock:
