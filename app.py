@@ -208,6 +208,7 @@ class UartStreamManager:
         self._last_line_seen: dict[tuple[str, str], tuple[str, float]] = {}
         self._writers: dict[tuple[str, str], Any] = {}
         self._writer_locks: dict[tuple[str, str], threading.Lock] = {}
+        self._uart_users: dict[tuple[str, str], str] = {}
         self._uart_log_files: dict[tuple[str, str], Any] = {}
         self._uart_log_locks: dict[tuple[str, str], threading.Lock] = {}
         self._lock = threading.Lock()
@@ -266,7 +267,7 @@ class UartStreamManager:
         except Exception:
             return
 
-    def start_capture(self, job_id: str, jobs_id: str, uart_paths: list[str], log_path: str) -> None:
+    def start_capture(self, job_id: str, jobs_id: str, uart_paths: list[str], log_path: str, run_as_user: str = "") -> None:
         unique_paths = sorted({path.strip() for path in uart_paths if path and path.strip()})
         if not unique_paths:
             return
@@ -290,6 +291,7 @@ class UartStreamManager:
                 log_handle = uart_log_path.open("a", encoding="utf-8")
                 self._uart_log_files[key] = log_handle
                 self._uart_log_locks[key] = threading.Lock()
+                self._uart_users[key] = str(run_as_user or "")
                 stop_event = threading.Event()
                 worker = threading.Thread(target=self._read_serial_worker, args=(job_id, device, stop_event), daemon=True)
                 self._threads[key] = (stop_event, worker)
@@ -304,6 +306,7 @@ class UartStreamManager:
                 self._writer_locks.pop(key, None)
                 handle = self._uart_log_files.pop(key, None)
                 self._uart_log_locks.pop(key, None)
+                self._uart_users.pop(key, None)
                 if handle is not None:
                     try:
                         handle.close()
@@ -324,6 +327,7 @@ class UartStreamManager:
             handles = list(self._uart_log_files.values())
             self._uart_log_files.clear()
             self._uart_log_locks.clear()
+            self._uart_users.clear()
 
         for stop_event, _ in workers:
             stop_event.set()
@@ -341,6 +345,25 @@ class UartStreamManager:
         with self._lock:
             self._buffers[job_id][device].append(message)
         self._broadcast(message)
+
+    @staticmethod
+    def _try_fix_uart_permission(device: str, run_as_user: str) -> bool:
+        target = str(device or "").strip()
+        user = str(run_as_user or "").strip()
+        if not target:
+            return False
+        commands: list[list[str]] = []
+        if user:
+            commands.append(["sudo", "-n", "setfacl", "-m", f"u:{user}:rw", target])
+        commands.append(["sudo", "-n", "chmod", "666", target])
+        for command in commands:
+            try:
+                rc = subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, text=True).returncode
+                if rc == 0:
+                    return True
+            except Exception:
+                continue
+        return False
 
     def write_input(self, job_id: str, device: str, content: str, append_newline: bool = False) -> tuple[bool, str]:
         key = (str(job_id), str(device))
@@ -372,6 +395,9 @@ class UartStreamManager:
             return False, f"[{job_id}] write failed on {device}: {exc}"
 
     def _read_serial_worker(self, job_id: str, device: str, stop_event: threading.Event) -> None:
+        with self._lock:
+            run_as_user = str(self._uart_users.get((job_id, device)) or "")
+        permission_fixed = False
         if serial is None:
             ts = datetime.now().isoformat(timespec="seconds")
             message = "pyserial is not installed on server"
@@ -412,6 +438,21 @@ class UartStreamManager:
                     is_busy = any(token in message for token in ("resource busy", "device or resource busy", "permission denied", "could not exclusively lock"))
                     if not is_busy:
                         raise
+                    if ("permission denied" in message) and (not permission_fixed):
+                        permission_fixed = True
+                        fixed = self._try_fix_uart_permission(device, run_as_user)
+                        fix_ts = datetime.now().isoformat(timespec="seconds")
+                        fix_message = f"[{job_id}] try fix UART permission on {device}: {'ok' if fixed else 'failed'}"
+                        self._write_uart_log(job_id, device, f"[{fix_ts}] {fix_message}")
+                        self._append_and_broadcast({
+                            "type": "status",
+                            "job_id": job_id,
+                            "device": device,
+                            "line": fix_message,
+                            "ts": fix_ts,
+                        })
+                        if fixed:
+                            continue
                     if not warned_busy:
                         warned_busy = True
                         busy_ts = datetime.now().isoformat(timespec="seconds")
@@ -492,6 +533,7 @@ class UartStreamManager:
                 self._writer_locks.pop((job_id, device), None)
                 handle = self._uart_log_files.pop((job_id, device), None)
                 self._uart_log_locks.pop((job_id, device), None)
+                self._uart_users.pop((job_id, device), None)
                 if handle is not None:
                     try:
                         handle.close()
@@ -1135,7 +1177,8 @@ print(json.dumps({"algo": algo, "signature": signature}))
                 uart_paths = list((job.payload or {}).get("uart_paths") or [])
                 jobs_id = str((job.payload or {}).get("jobs_id") or job.id)
                 log_path = str((job.payload or {}).get("log_path") or "")
-                self._uart_stream.start_capture(job.id, jobs_id, uart_paths, log_path)
+                run_as_user_for_uart = str((job.payload or {}).get("user_id") or "")
+                self._uart_stream.start_capture(job.id, jobs_id, uart_paths, log_path, run_as_user=run_as_user_for_uart)
                 threading.Thread(target=self._watch_job, args=(job.id, job.run_token), daemon=True).start()
         except Exception as exc:
             self._write_process_log(log_file, f"[HAPS_LOCK] prepare exception: {exc}")
