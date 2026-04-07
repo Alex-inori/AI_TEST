@@ -14,7 +14,6 @@ import re
 import select
 import pty
 import zlib
-from urllib.parse import quote
 
 try:
     import fcntl
@@ -1503,6 +1502,13 @@ def _uid_to_username(uid: int | None) -> str | None:
         return None
 
 
+def _username_to_passwd(username: str) -> pwd.struct_passwd | None:
+    try:
+        return pwd.getpwnam((username or "").strip())
+    except KeyError:
+        return None
+
+
 def get_system_user_id(request: Request | None = None) -> str:
     """Resolve stable user identity based on linux login name (whoami style)."""
     if request is not None:
@@ -1559,11 +1565,6 @@ def get_system_user(request: Request | None = None) -> str:
 def _is_loopback_host(host: str) -> bool:
     normalized = (host or "").strip().lower()
     return normalized in {"127.0.0.1", "::1", "localhost"}
-
-
-def _looks_like_terminal_url(value: str) -> bool:
-    text = (value or "").strip()
-    return "://" in text or text.startswith("cfgshell:")
 
 
 def _ipv4_hex(host: str) -> str:
@@ -1848,37 +1849,64 @@ def open_job_terminal(job_id: str, request: Request) -> dict[str, Any]:
     terminal_path = load_terminal_path()
     if not terminal_path:
         raise HTTPException(status_code=400, detail="missing TERMINAL in cfgshell.conf")
-    is_terminal_url = _looks_like_terminal_url(terminal_path)
-    if not is_terminal_url:
+    if not Path(terminal_path).exists():
+        raise HTTPException(status_code=400, detail=f"terminal path not found: {terminal_path}")
+    if not os.access(terminal_path, os.X_OK):
+        raise HTTPException(status_code=400, detail=f"terminal path is not executable: {terminal_path}")
+
+    target_pwd = _username_to_passwd(viewer_user_id)
+    if target_pwd is None:
+        raise HTTPException(status_code=400, detail=f"linux user not found: {viewer_user_id}")
+
+    launch_cwd = str(payload.get("log_path") or "").strip() or str(Path(target_pwd.pw_dir).expanduser())
+    if not Path(launch_cwd).exists():
+        launch_cwd = str(Path(target_pwd.pw_dir).expanduser())
+
+    current_euid = os.geteuid()
+    target_uid = int(target_pwd.pw_uid)
+    target_gid = int(target_pwd.pw_gid)
+    preexec_fn = None
+    if current_euid == 0:
+        def _drop_privileges() -> None:
+            os.initgroups(target_pwd.pw_name, target_gid)
+            os.setgid(target_gid)
+            os.setuid(target_uid)
+
+        preexec_fn = _drop_privileges
+    elif current_euid != target_uid:
         raise HTTPException(
-            status_code=400,
+            status_code=403,
             detail=(
-                "TERMINAL must be a frontend URL/protocol (for example cfgshell://open?"
-                "cwd={cwd}&command={command})"
+                "service user does not match terminal owner and has no permission "
+                "to switch user; run service as root or as the target user"
             ),
         )
 
-    launch_cwd = str(payload.get("log_path") or "").strip() or str(Path.home())
-    if not Path(launch_cwd).exists():
-        launch_cwd = str(Path.home())
+    terminal_env = os.environ.copy()
+    terminal_env.update({
+        "HOME": target_pwd.pw_dir,
+        "LOGNAME": target_pwd.pw_name,
+        "USER": target_pwd.pw_name,
+    })
+    xauth_path = str(Path(target_pwd.pw_dir).expanduser() / ".Xauthority")
+    if os.path.exists(xauth_path):
+        terminal_env.setdefault("XAUTHORITY", xauth_path)
 
-    quoted_cwd = shlex.quote(launch_cwd)
-    quoted_terminal = shlex.quote(str(terminal_path))
-    launch_command = f"cd {quoted_cwd} && {quoted_terminal}"
-    launch_url = ""
-    if is_terminal_url:
-        launch_url = (
-            str(terminal_path)
-            .replace("{cwd}", quote(launch_cwd, safe=""))
-            .replace("{command}", quote(launch_command, safe=""))
+    try:
+        subprocess.Popen(  # noqa: S603
+            [terminal_path],  # noqa: S607
+            cwd=launch_cwd,
+            env=terminal_env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            preexec_fn=preexec_fn,
+            start_new_session=True,
         )
-    return {
-        "ok": True,
-        "mode": "client",
-        "cwd": launch_cwd,
-        "terminal_path": terminal_path,
-        "launch_url": launch_url,
-    }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"failed to open terminal: {exc}") from exc
+
+    return {"ok": True}
 
 
 @app.post("/api/jobs/{job_id}/confirm-stop")

@@ -27,14 +27,6 @@ function serviceBaseUrl() {
 function wsBaseUrl() {
   return `ws://127.0.0.1:${servicePort}`;
 }
-function triggerTerminalProcess(launchUrl) {
-  const frame = document.createElement('iframe');
-  frame.style.display = 'none';
-  frame.setAttribute('aria-hidden', 'true');
-  frame.src = launchUrl;
-  document.body.appendChild(frame);
-  window.setTimeout(() => frame.remove(), 1500);
-}
 function buildApiUrl(path) {
   return `${serviceBaseUrl()}${path}`;
 }
@@ -841,16 +833,10 @@ async function openRunningJobTerminal(jobId) {
     } catch (_) {}
     return;
   }
-  let data = null;
   try {
-    data = await response.json();
+    const data = await response.json();
+    if (!data || data.ok !== true) alert('Open Terminal failed: invalid response');
   } catch (_) {}
-  const launchUrl = String((data && data.launch_url) || '').trim();
-  if (!launchUrl) {
-    alert('Open Terminal failed: launch_url is empty, please check TERMINAL in cfgshell.conf.');
-    return;
-  }
-  triggerTerminalProcess(launchUrl);
 }
 function formatWait(seconds) {
   const safe = Math.max(0, Number(seconds) || 0);
