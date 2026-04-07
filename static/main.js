@@ -30,6 +30,36 @@ function wsBaseUrl() {
 function buildApiUrl(path) {
   return `${serviceBaseUrl()}${path}`;
 }
+function tryLaunchTerminalByExtension(launchPayload, timeoutMs = 1200) {
+  return new Promise((resolve) => {
+    if (!launchPayload || typeof window.postMessage !== 'function') {
+      resolve(false);
+      return;
+    }
+    const reqId = `terminal-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    let done = false;
+    const finish = (ok) => {
+      if (done) return;
+      done = true;
+      window.removeEventListener('message', onMessage);
+      window.clearTimeout(timer);
+      resolve(!!ok);
+    };
+    const onMessage = (event) => {
+      const msg = event && event.data;
+      if (!msg || msg.type !== 'CFGSHELL_TERMINAL_LAUNCH_RESULT') return;
+      if (String(msg.request_id || '') !== reqId) return;
+      finish(Boolean(msg.ok));
+    };
+    const timer = window.setTimeout(() => finish(false), timeoutMs);
+    window.addEventListener('message', onMessage);
+    window.postMessage({
+      type: 'CFGSHELL_TERMINAL_LAUNCH',
+      request_id: reqId,
+      payload: launchPayload,
+    }, '*');
+  });
+}
 function trimOldestCreateJobsIfNeeded(limit = createJobsMaxNum) {
   const max = Number.parseInt(limit, 10);
   if (!Number.isFinite(max) || max <= 0) return;
@@ -825,16 +855,25 @@ async function stopAndResubmitJob(jobId) {
   refreshWaitingJobs();
 }
 async function openRunningJobTerminal(jobId) {
-  const response = await fetch(buildApiUrl(`/api/jobs/${jobId}/open-terminal`), { method: 'POST' });
-  if (!response.ok) {
+  try {
+    const extResp = await fetch(buildApiUrl(`/api/jobs/${jobId}/open-terminal?mode=extension`), { method: 'POST' });
+    if (extResp.ok) {
+      const extData = await extResp.json();
+      const launched = await tryLaunchTerminalByExtension(extData.launch || null);
+      if (launched) return;
+    }
+  } catch (_) {}
+
+  const fallbackResp = await fetch(buildApiUrl(`/api/jobs/${jobId}/open-terminal`), { method: 'POST' });
+  if (!fallbackResp.ok) {
     try {
-      const detail = await response.text();
+      const detail = await fallbackResp.text();
       alert(`Open Terminal failed: ${detail}`);
     } catch (_) {}
     return;
   }
   try {
-    const data = await response.json();
+    const data = await fallbackResp.json();
     if (!data || data.ok !== true) alert('Open Terminal failed: invalid response');
   } catch (_) {}
 }

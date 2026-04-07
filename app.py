@@ -1863,6 +1863,18 @@ def open_job_terminal(job_id: str, request: Request) -> dict[str, Any]:
     if not Path(launch_cwd).exists():
         launch_cwd = str(Path(target_pwd.pw_dir).expanduser())
 
+    launch_mode = str(request.query_params.get("mode") or "").strip().lower()
+    if launch_mode == "extension":
+        return {
+            "ok": True,
+            "mode": "extension",
+            "launch": {
+                "terminal_path": terminal_path,
+                "cwd": launch_cwd,
+                "user_id": viewer_user_id,
+            },
+        }
+
     current_euid = os.geteuid()
     target_uid = int(target_pwd.pw_uid)
     target_gid = int(target_pwd.pw_gid)
