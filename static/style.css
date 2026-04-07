@@ -370,3 +370,78 @@ button { padding: 9px 12px; border: none; border-radius: 7px; cursor: pointer; b
 .uart-column-send-btn:hover {
   background: rgba(148, 163, 184, 0.14);
 }
+
+
+.terminal-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 38px;
+  padding: 8px 10px;
+}
+
+.terminal-icon {
+  display: block;
+}
+
+
+.copy-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 38px;
+  padding: 8px 10px;
+}
+
+.copy-icon {
+  display: block;
+  fill: #3F4E63;
+}
+
+
+.action-icon-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  flex-wrap: nowrap;
+}
+
+.icon-only-btn {
+  background: transparent !important;
+  border: none;
+  box-shadow: none;
+  padding: 6px;
+  min-height: auto;
+  width: auto !important;
+}
+
+.icon-only-btn:hover {
+  background: rgba(59, 130, 246, 0.12) !important;
+}
+
+
+.uart-icon-btn.active {
+  background: rgba(59, 130, 246, 0.16) !important;
+}
+
+.uart-icon {
+  display: block;
+}
+
+
+.action-svg-icon {
+  width: 1.25em;
+  height: 1.25em;
+  min-width: 20px;
+  min-height: 20px;
+  max-width: 24px;
+  max-height: 24px;
+}
+
+
+.stop-resubmit-icon {
+  display: block;
+  fill: #3F4E63;
+}

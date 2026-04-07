@@ -925,46 +925,68 @@ function renderRecentJobs(jobs) {
     actions.style.justifyContent = 'flex-start';
     actions.style.gap = '8px';
     actions.style.width = '180px';
+    const iconActionRow = document.createElement('div');
+    iconActionRow.className = 'action-icon-row';
     const copyBtn = document.createElement('button');
-    copyBtn.textContent = 'Copy to New Jobs';
-    copyBtn.className = 'copy-btn';
+    copyBtn.className = 'copy-btn copy-icon-btn icon-only-btn';
     copyBtn.type = 'button';
-    copyBtn.style.width = '100%';
+    copyBtn.title = 'Copy to New Jobs';
+    copyBtn.setAttribute('aria-label', 'Copy to New Jobs');
+    copyBtn.innerHTML = `
+      <svg class="copy-icon action-svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512" aria-hidden="true">
+        <path d="M192 0c-35.3 0-64 28.7-64 64l0 256c0 35.3 28.7 64 64 64l192 0c35.3 0 64-28.7 64-64l0-200.6c0-17.4-7.1-34.1-19.7-46.2L370.6 17.8C358.7 6.4 342.8 0 326.3 0L192 0zM64 128c-35.3 0-64 28.7-64 64L0 448c0 35.3 28.7 64 64 64l192 0c35.3 0 64-28.7 64-64l0-16-64 0 0 16-192 0 0-256 16 0 0-64-16 0z"/>
+      </svg>`;
     copyBtn.addEventListener('click', () => createNewJobCard(payload, null, { regenerateJobsId: true }));
-    actions.appendChild(copyBtn);
+    iconActionRow.appendChild(copyBtn);
+    actions.appendChild(iconActionRow);
     const jobUartPaths = Array.isArray(payload.uart_paths) ? payload.uart_paths : [];
     const isOwner = String(payload.user_id || '') === String(currentUserId || '');
     if (jobUartPaths.length && isOwner) {
       const uartBtn = document.createElement('button');
       const expanded = expandedUartJobs.has(String(job.id));
-      uartBtn.textContent = expanded ? 'Hide UART Console' : 'Open UART Console';
-      uartBtn.className = 'copy-btn';
+      uartBtn.className = `copy-btn uart-icon-btn icon-only-btn${expanded ? ' active' : ''}`;
       uartBtn.type = 'button';
-      uartBtn.style.width = '100%';
+      const uartLabel = expanded ? 'Hide UART Console' : 'Open UART Console';
+      uartBtn.title = uartLabel;
+      uartBtn.setAttribute('aria-label', uartLabel);
+      uartBtn.innerHTML = `
+        <svg class="uart-icon action-svg-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+          <path d="M2.23177 10.3862C1.82042 8.65816 3.13073 6.99933 4.90701 6.99933H19.0915C20.8685 6.99933 22.1789 8.65932 21.7664 10.3877L20.6921 14.889C20.3966 16.1271 19.2901 17.0007 18.0172 17.0007H5.97854C4.70507 17.0007 3.5982 16.1263 3.30329 14.8875L2.23177 10.3862ZM7.00003 11.5C7.41424 11.5 7.75003 11.1642 7.75003 10.75C7.75003 10.3358 7.41424 10 7.00003 10C6.58582 10 6.25003 10.3358 6.25003 10.75C6.25003 11.1642 6.58582 11.5 7.00003 11.5ZM10.25 10.75C10.25 10.3358 9.91424 10 9.50003 10C9.08582 10 8.75003 10.3358 8.75003 10.75C8.75003 11.1642 9.08582 11.5 9.50003 11.5C9.91424 11.5 10.25 11.1642 10.25 10.75ZM8.25003 14C8.66424 14 9.00003 13.6642 9.00003 13.25C9.00003 12.8358 8.66424 12.5 8.25003 12.5C7.83582 12.5 7.50003 12.8358 7.50003 13.25C7.50003 13.6642 7.83582 14 8.25003 14ZM11.5 13.25C11.5 12.8358 11.1642 12.5 10.75 12.5C10.3358 12.5 10 12.8358 10 13.25C10 13.6642 10.3358 14 10.75 14C11.1642 14 11.5 13.6642 11.5 13.25ZM13.25 14C13.6642 14 14 13.6642 14 13.25C14 12.8358 13.6642 12.5 13.25 12.5C12.8358 12.5 12.5 12.8358 12.5 13.25C12.5 13.6642 12.8358 14 13.25 14ZM16.5 13.25C16.5 12.8358 16.1642 12.5 15.75 12.5C15.3358 12.5 15 12.8358 15 13.25C15 13.6642 15.3358 14 15.75 14C16.1642 14 16.5 13.6642 16.5 13.25ZM12 11.5C12.4142 11.5 12.75 11.1642 12.75 10.75C12.75 10.3358 12.4142 10 12 10C11.5858 10 11.25 10.3358 11.25 10.75C11.25 11.1642 11.5858 11.5 12 11.5ZM15.25 10.75C15.25 10.3358 14.9142 10 14.5 10C14.0858 10 13.75 10.3358 13.75 10.75C13.75 11.1642 14.0858 11.5 14.5 11.5C14.9142 11.5 15.25 11.1642 15.25 10.75ZM17 11.5C17.4142 11.5 17.75 11.1642 17.75 10.75C17.75 10.3358 17.4142 10 17 10C16.5858 10 16.25 10.3358 16.25 10.75C16.25 11.1642 16.5858 11.5 17 11.5Z" fill="#212121"/>
+        </svg>`;
       uartBtn.addEventListener('click', () => {
         const key = String(job.id);
         if (expandedUartJobs.has(key)) expandedUartJobs.delete(key);
         else expandedUartJobs.add(key);
         refreshRecentJobs();
       });
-      actions.appendChild(uartBtn);
+      iconActionRow.appendChild(uartBtn);
     }
     if (running) {
       if (isOwner) {
         const terminalBtn = document.createElement('button');
-        terminalBtn.textContent = 'Open Terminal';
-        terminalBtn.className = 'copy-btn';
+        terminalBtn.className = 'copy-btn terminal-icon-btn icon-only-btn';
         terminalBtn.type = 'button';
-        terminalBtn.style.width = '100%';
+        terminalBtn.title = 'Open Terminal';
+        terminalBtn.setAttribute('aria-label', 'Open Terminal');
+        terminalBtn.innerHTML = `
+          <svg class="terminal-icon action-svg-icon" viewBox="0 0 512 512" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+            <rect x="32" y="64" width="448" height="384" rx="64" fill="#3F4E63"/>
+            <polyline points="150,200 230,280 150,360" fill="none" stroke="#E5E7EB" stroke-width="32" stroke-linecap="round" stroke-linejoin="round"/>
+            <line x1="260" y1="340" x2="360" y2="340" stroke="#E5E7EB" stroke-width="32" stroke-linecap="round"/>
+          </svg>`;
         terminalBtn.addEventListener('click', () => openRunningJobTerminal(job.id));
-        actions.appendChild(terminalBtn);
+        iconActionRow.appendChild(terminalBtn);
         const stopAndResubmitBtn = document.createElement('button');
-        stopAndResubmitBtn.textContent = 'Stop and Resubmit';
-        stopAndResubmitBtn.className = 'copy-btn';
+        stopAndResubmitBtn.className = 'copy-btn stop-resubmit-icon-btn icon-only-btn';
         stopAndResubmitBtn.type = 'button';
-        stopAndResubmitBtn.style.width = '100%';
+        stopAndResubmitBtn.title = 'Stop and Resubmit';
+        stopAndResubmitBtn.setAttribute('aria-label', 'Stop and Resubmit');
+        stopAndResubmitBtn.innerHTML = `
+          <svg class="stop-resubmit-icon action-svg-icon" viewBox="0 0 512 512" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+            <path d="M65.9 228.5c13.3-93 93.4-164.5 190.1-164.5 53 0 101 21.5 135.8 56.2 .2 .2 .4 .4 .6 .6l7.6 7.2-47.9 0c-17.7 0-32 14.3-32 32s14.3 32 32 32l128 0c17.7 0 32-14.3 32-32l0-128c0-17.7-14.3-32-32-32s-32 14.3-32 32l0 53.4-11.3-10.7C390.5 28.6 326.5 0 256 0 127 0 20.3 95.4 2.6 219.5 .1 237 12.2 253.2 29.7 255.7s33.7-9.7 36.2-27.1zm443.5 64c2.5-17.5-9.7-33.7-27.1-36.2s-33.7 9.7-36.2 27.1c-13.3 93-93.4 164.5-190.1 164.5-53 0-101-21.5-135.8-56.2-.2-.2-.4-.4-.6-.6l-7.6-7.2 47.9 0c17.7 0 32-14.3 32-32s-14.3-32-32-32L32 320c-8.5 0-16.7 3.4-22.7 9.5S-.1 343.7 0 352.3l1 127c.1 17.7 14.6 31.9 32.3 31.7S65.2 496.4 65 478.7l-.4-51.5 10.7 10.1c46.3 46.1 110.2 74.7 180.7 74.7 129 0 235.7-95.4 253.4-219.5z"/>
+          </svg>`;
         stopAndResubmitBtn.addEventListener('click', () => stopAndResubmitJob(job.id));
-        actions.appendChild(stopAndResubmitBtn);
+        iconActionRow.appendChild(stopAndResubmitBtn);
         const finishBtn = document.createElement('button');
         finishBtn.textContent = 'Finish';
         finishBtn.className = 'finish-btn';
