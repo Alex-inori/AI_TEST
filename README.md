@@ -126,3 +126,41 @@ pip install fastapi uvicorn pyserial
 - `SERVICE_PORT`：前端请求后端服务端口。未配置时默认使用 `127.0.0.1:8000`。
 - `CREATE_JOBS_MAX_NUM`：New Jobs 页面允许创建/提交的最大 Job 数量。未配置时默认 `5`。
 - `RECENT_JOBS_MAX_NUM`：Recent Jobs 最多保留显示条数。未配置时默认 `10`。
+
+## Chrome Extension 部署（Terminal 自动拉起）
+
+仓库提供了可直接部署的 extension 前端桥接代码：
+
+- `extension/chrome-terminal-launcher/manifest.json`
+- `extension/chrome-terminal-launcher/content.js`
+- `extension/chrome-terminal-launcher/background.js`
+
+以及 Native Messaging Host 示例：
+
+- `extension/native-host/terminal_launcher.py`
+- `extension/native-host/com.cfgshell.terminal_launcher.json`
+
+### 1) 安装 Chrome Extension（开发者模式）
+
+1. 打开 `chrome://extensions`
+2. 开启「开发者模式」
+3. 点击「加载已解压的扩展程序」
+4. 选择目录：`extension/chrome-terminal-launcher`
+
+### 2) 注册 Native Messaging Host（每个 ETX 登录用户都要注册）
+
+1. 修改 `extension/native-host/com.cfgshell.terminal_launcher.json`：
+   - `path` 改为本机 `terminal_launcher.py` 的绝对路径
+   - `allowed_origins` 改为你本机扩展的真实 extension id
+2. 把该 json 放到当前用户的 Native Messaging 配置目录（Linux 常见目录）：
+   - `~/.config/google-chrome/NativeMessagingHosts/`
+3. 确保脚本可执行：
+
+```bash
+chmod +x extension/native-host/terminal_launcher.py
+```
+
+### 3) 行为说明
+
+- 页面会先尝试通过 extension + native host 在**前端用户会话**中启动 `TERMINAL`。
+- 如果 extension / native host 没有就绪，页面会自动回退到后端现有启动逻辑。

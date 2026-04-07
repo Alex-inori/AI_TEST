@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "CfgShell Terminal Launcher",
+  "version": "1.0.0",
+  "description": "Bridge web UI terminal launch requests to local native host.",
+  "permissions": ["nativeMessaging"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ]
+}

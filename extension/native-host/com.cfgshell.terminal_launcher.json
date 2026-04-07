@@ -1,0 +1,9 @@
+{
+  "name": "com.cfgshell.terminal_launcher",
+  "description": "CfgShell local terminal launcher",
+  "path": "/ABS/PATH/TO/extension/native-host/terminal_launcher.py",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://REPLACE_WITH_YOUR_EXTENSION_ID/"
+  ]
+}
