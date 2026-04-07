@@ -1850,10 +1850,13 @@ def open_job_terminal(job_id: str, request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="missing TERMINAL in cfgshell.conf")
     is_terminal_url = _looks_like_terminal_url(terminal_path)
     if not is_terminal_url:
-        if not Path(terminal_path).exists():
-            raise HTTPException(status_code=400, detail=f"terminal path not found: {terminal_path}")
-        if not os.access(terminal_path, os.X_OK):
-            raise HTTPException(status_code=400, detail=f"terminal path is not executable: {terminal_path}")
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "TERMINAL must be a frontend URL/protocol (for example cfgshell://open?"
+                "cwd={cwd}&command={command})"
+            ),
+        )
 
     launch_cwd = str(payload.get("log_path") or "").strip() or str(Path.home())
     if not Path(launch_cwd).exists():
@@ -1874,7 +1877,6 @@ def open_job_terminal(job_id: str, request: Request) -> dict[str, Any]:
         "mode": "client",
         "cwd": launch_cwd,
         "terminal_path": terminal_path,
-        "launch_command": launch_command,
         "launch_url": launch_url,
     }
 

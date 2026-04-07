@@ -837,26 +837,19 @@ async function openRunningJobTerminal(jobId) {
   try {
     data = await response.json();
   } catch (_) {}
-  const launchCommand = String((data && data.launch_command) || '').trim();
   const launchUrl = String((data && data.launch_url) || '').trim();
-  if (launchUrl) {
-    const popup = window.open(launchUrl, '_blank', 'noopener,noreferrer');
-    if (popup) return;
-  }
-  if (!launchCommand) {
-    alert('Terminal command is empty.');
+  if (!launchUrl) {
+    alert('Open Terminal failed: launch_url is empty, please check TERMINAL in cfgshell.conf.');
     return;
   }
-  let copied = false;
-  try {
-    await navigator.clipboard.writeText(launchCommand);
-    copied = true;
-  } catch (_) {}
-  alert(
-    copied
-      ? `Terminal command copied. Please run it on your machine:\n\n${launchCommand}`
-      : `Please run this command on your machine:\n\n${launchCommand}`,
-  );
+  const link = document.createElement('a');
+  link.href = launchUrl;
+  link.target = '_self';
+  link.rel = 'noopener noreferrer';
+  link.style.display = 'none';
+  document.body.appendChild(link);
+  link.click();
+  window.setTimeout(() => link.remove(), 0);
 }
 function formatWait(seconds) {
   const safe = Math.max(0, Number(seconds) || 0);
