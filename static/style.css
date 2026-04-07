@@ -389,3 +389,23 @@ button { padding: 9px 12px; border: none; border-radius: 7px; cursor: pointer; b
   max-width: 24px;
   max-height: 24px;
 }
+
+
+.copy-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 38px;
+  padding: 8px 10px;
+}
+
+.copy-icon {
+  display: block;
+  width: 1.2em;
+  height: 1.2em;
+  min-width: 18px;
+  min-height: 18px;
+  max-width: 22px;
+  max-height: 22px;
+  fill: currentColor;
+}
