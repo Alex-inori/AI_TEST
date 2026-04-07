@@ -925,10 +925,11 @@ function renderRecentJobs(jobs) {
     actions.style.justifyContent = 'flex-start';
     actions.style.gap = '8px';
     actions.style.width = '180px';
+    const iconActionRow = document.createElement('div');
+    iconActionRow.className = 'action-icon-row';
     const copyBtn = document.createElement('button');
-    copyBtn.className = 'copy-btn copy-icon-btn';
+    copyBtn.className = 'copy-btn copy-icon-btn icon-only-btn';
     copyBtn.type = 'button';
-    copyBtn.style.width = '100%';
     copyBtn.title = 'Copy to New Jobs';
     copyBtn.setAttribute('aria-label', 'Copy to New Jobs');
     copyBtn.innerHTML = `
@@ -936,7 +937,8 @@ function renderRecentJobs(jobs) {
         <path d="M192 0c-35.3 0-64 28.7-64 64l0 256c0 35.3 28.7 64 64 64l192 0c35.3 0 64-28.7 64-64l0-200.6c0-17.4-7.1-34.1-19.7-46.2L370.6 17.8C358.7 6.4 342.8 0 326.3 0L192 0zM64 128c-35.3 0-64 28.7-64 64L0 448c0 35.3 28.7 64 64 64l192 0c35.3 0 64-28.7 64-64l0-16-64 0 0 16-192 0 0-256 16 0 0-64-16 0z"/>
       </svg>`;
     copyBtn.addEventListener('click', () => createNewJobCard(payload, null, { regenerateJobsId: true }));
-    actions.appendChild(copyBtn);
+    iconActionRow.appendChild(copyBtn);
+    actions.appendChild(iconActionRow);
     const jobUartPaths = Array.isArray(payload.uart_paths) ? payload.uart_paths : [];
     const isOwner = String(payload.user_id || '') === String(currentUserId || '');
     if (jobUartPaths.length && isOwner) {
@@ -957,9 +959,8 @@ function renderRecentJobs(jobs) {
     if (running) {
       if (isOwner) {
         const terminalBtn = document.createElement('button');
-        terminalBtn.className = 'copy-btn terminal-icon-btn';
+        terminalBtn.className = 'copy-btn terminal-icon-btn icon-only-btn';
         terminalBtn.type = 'button';
-        terminalBtn.style.width = '100%';
         terminalBtn.title = 'Open Terminal';
         terminalBtn.setAttribute('aria-label', 'Open Terminal');
         terminalBtn.innerHTML = `
@@ -969,7 +970,7 @@ function renderRecentJobs(jobs) {
             <line x1="260" y1="340" x2="360" y2="340" stroke="#E5E7EB" stroke-width="32" stroke-linecap="round"/>
           </svg>`;
         terminalBtn.addEventListener('click', () => openRunningJobTerminal(job.id));
-        actions.appendChild(terminalBtn);
+        iconActionRow.appendChild(terminalBtn);
         const stopAndResubmitBtn = document.createElement('button');
         stopAndResubmitBtn.textContent = 'Stop and Resubmit';
         stopAndResubmitBtn.className = 'copy-btn';

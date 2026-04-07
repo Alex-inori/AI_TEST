@@ -409,3 +409,25 @@ button { padding: 9px 12px; border: none; border-radius: 7px; cursor: pointer; b
   max-height: 24px;
   fill: currentColor;
 }
+
+
+.action-icon-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  width: 100%;
+}
+
+.icon-only-btn {
+  background: transparent !important;
+  border: none;
+  box-shadow: none;
+  padding: 6px;
+  min-height: auto;
+  width: auto !important;
+}
+
+.icon-only-btn:hover {
+  background: rgba(59, 130, 246, 0.12) !important;
+}
