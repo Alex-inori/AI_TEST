@@ -14,6 +14,7 @@ import re
 import select
 import pty
 import zlib
+from urllib.parse import quote
 
 try:
     import fcntl
@@ -1560,6 +1561,11 @@ def _is_loopback_host(host: str) -> bool:
     return normalized in {"127.0.0.1", "::1", "localhost"}
 
 
+def _looks_like_terminal_url(value: str) -> bool:
+    text = (value or "").strip()
+    return "://" in text or text.startswith("cfgshell:")
+
+
 def _ipv4_hex(host: str) -> str:
     packed = socket.inet_aton(host)
     # /proc/net/tcp stores IPv4 bytes in little-endian order.
@@ -1842,10 +1848,12 @@ def open_job_terminal(job_id: str, request: Request) -> dict[str, Any]:
     terminal_path = load_terminal_path()
     if not terminal_path:
         raise HTTPException(status_code=400, detail="missing TERMINAL in cfgshell.conf")
-    if not Path(terminal_path).exists():
-        raise HTTPException(status_code=400, detail=f"terminal path not found: {terminal_path}")
-    if not os.access(terminal_path, os.X_OK):
-        raise HTTPException(status_code=400, detail=f"terminal path is not executable: {terminal_path}")
+    is_terminal_url = _looks_like_terminal_url(terminal_path)
+    if not is_terminal_url:
+        if not Path(terminal_path).exists():
+            raise HTTPException(status_code=400, detail=f"terminal path not found: {terminal_path}")
+        if not os.access(terminal_path, os.X_OK):
+            raise HTTPException(status_code=400, detail=f"terminal path is not executable: {terminal_path}")
 
     launch_cwd = str(payload.get("log_path") or "").strip() or str(Path.home())
     if not Path(launch_cwd).exists():
@@ -1854,12 +1862,20 @@ def open_job_terminal(job_id: str, request: Request) -> dict[str, Any]:
     quoted_cwd = shlex.quote(launch_cwd)
     quoted_terminal = shlex.quote(str(terminal_path))
     launch_command = f"cd {quoted_cwd} && {quoted_terminal}"
+    launch_url = ""
+    if is_terminal_url:
+        launch_url = (
+            str(terminal_path)
+            .replace("{cwd}", quote(launch_cwd, safe=""))
+            .replace("{command}", quote(launch_command, safe=""))
+        )
     return {
         "ok": True,
         "mode": "client",
         "cwd": launch_cwd,
         "terminal_path": terminal_path,
         "launch_command": launch_command,
+        "launch_url": launch_url,
     }
 
 

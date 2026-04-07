@@ -838,6 +838,11 @@ async function openRunningJobTerminal(jobId) {
     data = await response.json();
   } catch (_) {}
   const launchCommand = String((data && data.launch_command) || '').trim();
+  const launchUrl = String((data && data.launch_url) || '').trim();
+  if (launchUrl) {
+    const popup = window.open(launchUrl, '_blank', 'noopener,noreferrer');
+    if (popup) return;
+  }
   if (!launchCommand) {
     alert('Terminal command is empty.');
     return;
