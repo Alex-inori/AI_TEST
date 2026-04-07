@@ -395,7 +395,7 @@ button { padding: 9px 12px; border: none; border-radius: 7px; cursor: pointer; b
 
 .copy-icon {
   display: block;
-  fill: currentColor;
+  fill: #3F4E63;
 }
 
 
@@ -443,5 +443,5 @@ button { padding: 9px 12px; border: none; border-radius: 7px; cursor: pointer; b
 
 .stop-resubmit-icon {
   display: block;
-  fill: currentColor;
+  fill: #3F4E63;
 }
