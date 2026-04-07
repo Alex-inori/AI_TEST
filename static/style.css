@@ -439,3 +439,9 @@ button { padding: 9px 12px; border: none; border-radius: 7px; cursor: pointer; b
   max-width: 24px;
   max-height: 24px;
 }
+
+
+.stop-resubmit-icon {
+  display: block;
+  fill: currentColor;
+}
