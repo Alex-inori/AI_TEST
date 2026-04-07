@@ -831,7 +831,27 @@ async function openRunningJobTerminal(jobId) {
       const detail = await response.text();
       alert(`Open Terminal failed: ${detail}`);
     } catch (_) {}
+    return;
   }
+  let data = null;
+  try {
+    data = await response.json();
+  } catch (_) {}
+  const launchCommand = String((data && data.launch_command) || '').trim();
+  if (!launchCommand) {
+    alert('Terminal command is empty.');
+    return;
+  }
+  let copied = false;
+  try {
+    await navigator.clipboard.writeText(launchCommand);
+    copied = true;
+  } catch (_) {}
+  alert(
+    copied
+      ? `Terminal command copied. Please run it on your machine:\n\n${launchCommand}`
+      : `Please run this command on your machine:\n\n${launchCommand}`,
+  );
 }
 function formatWait(seconds) {
   const safe = Math.max(0, Number(seconds) || 0);

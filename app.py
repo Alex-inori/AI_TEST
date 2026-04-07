@@ -1851,19 +1851,16 @@ def open_job_terminal(job_id: str, request: Request) -> dict[str, Any]:
     if not Path(launch_cwd).exists():
         launch_cwd = str(Path.home())
 
-    try:
-        subprocess.Popen(  # noqa: S603
-            [terminal_path],  # noqa: S607
-            cwd=launch_cwd,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"failed to open terminal: {exc}") from exc
-
-    return {"ok": True}
+    quoted_cwd = shlex.quote(launch_cwd)
+    quoted_terminal = shlex.quote(str(terminal_path))
+    launch_command = f"cd {quoted_cwd} && {quoted_terminal}"
+    return {
+        "ok": True,
+        "mode": "client",
+        "cwd": launch_cwd,
+        "terminal_path": terminal_path,
+        "launch_command": launch_command,
+    }
 
 
 @app.post("/api/jobs/{job_id}/confirm-stop")
