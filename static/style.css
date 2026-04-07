@@ -382,12 +382,6 @@ button { padding: 9px 12px; border: none; border-radius: 7px; cursor: pointer; b
 
 .terminal-icon {
   display: block;
-  width: 1.25em;
-  height: 1.25em;
-  min-width: 20px;
-  min-height: 20px;
-  max-width: 24px;
-  max-height: 24px;
 }
 
 
@@ -401,12 +395,6 @@ button { padding: 9px 12px; border: none; border-radius: 7px; cursor: pointer; b
 
 .copy-icon {
   display: block;
-  width: 1.25em;
-  height: 1.25em;
-  min-width: 20px;
-  min-height: 20px;
-  max-width: 24px;
-  max-height: 24px;
   fill: currentColor;
 }
 
@@ -417,6 +405,7 @@ button { padding: 9px 12px; border: none; border-radius: 7px; cursor: pointer; b
   justify-content: flex-end;
   gap: 10px;
   width: 100%;
+  flex-wrap: nowrap;
 }
 
 .icon-only-btn {
@@ -439,6 +428,10 @@ button { padding: 9px 12px; border: none; border-radius: 7px; cursor: pointer; b
 
 .uart-icon {
   display: block;
+}
+
+
+.action-svg-icon {
   width: 1.25em;
   height: 1.25em;
   min-width: 20px;
