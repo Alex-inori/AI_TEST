@@ -27,6 +27,14 @@ function serviceBaseUrl() {
 function wsBaseUrl() {
   return `ws://127.0.0.1:${servicePort}`;
 }
+function triggerTerminalProcess(launchUrl) {
+  const frame = document.createElement('iframe');
+  frame.style.display = 'none';
+  frame.setAttribute('aria-hidden', 'true');
+  frame.src = launchUrl;
+  document.body.appendChild(frame);
+  window.setTimeout(() => frame.remove(), 1500);
+}
 function buildApiUrl(path) {
   return `${serviceBaseUrl()}${path}`;
 }
@@ -842,14 +850,7 @@ async function openRunningJobTerminal(jobId) {
     alert('Open Terminal failed: launch_url is empty, please check TERMINAL in cfgshell.conf.');
     return;
   }
-  const link = document.createElement('a');
-  link.href = launchUrl;
-  link.target = '_self';
-  link.rel = 'noopener noreferrer';
-  link.style.display = 'none';
-  document.body.appendChild(link);
-  link.click();
-  window.setTimeout(() => link.remove(), 0);
+  triggerTerminalProcess(launchUrl);
 }
 function formatWait(seconds) {
   const safe = Math.max(0, Number(seconds) || 0);
