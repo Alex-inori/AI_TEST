@@ -11,6 +11,7 @@
       {
         type: 'CFGSHELL_TERMINAL_LAUNCH_REQUEST',
         request_id: String(data.request_id || ''),
+        action: String(data.action || 'launch_terminal'),
         payload: data.payload || {},
       },
       (response) => {

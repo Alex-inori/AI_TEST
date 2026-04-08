@@ -1,11 +1,12 @@
 const NATIVE_HOST = 'com.cfgshell.terminal_launcher';
 
-function launchViaNative(payload) {
+function launchViaNative(action, payload) {
+  const normalizedAction = String(action || 'launch_terminal');
   return new Promise((resolve) => {
     chrome.runtime.sendNativeMessage(
       NATIVE_HOST,
       {
-        action: 'launch_terminal',
+        action: normalizedAction,
         payload: payload || {},
       },
       (response) => {
@@ -25,7 +26,7 @@ function launchViaNative(payload) {
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (!message || message.type !== 'CFGSHELL_TERMINAL_LAUNCH_REQUEST') return;
-  launchViaNative(message.payload)
+  launchViaNative(message.action, message.payload)
     .then((result) => sendResponse(result))
     .catch((err) => sendResponse({ ok: false, error: String(err || 'unknown error') }));
   return true;

@@ -49,6 +49,29 @@ def _handle_launch(payload: dict) -> dict:
     return {'ok': True}
 
 
+def _handle_launch_cfgshell(payload: dict) -> dict:
+    cmd = list((payload or {}).get('cmd') or [])
+    cwd = str((payload or {}).get('cwd') or '').strip()
+    if not cmd:
+        return {'ok': False, 'error': 'cmd is empty'}
+    if not isinstance(cmd, list) or not all(isinstance(item, str) and item.strip() for item in cmd):
+        return {'ok': False, 'error': 'cmd must be a non-empty string list'}
+
+    launch_cwd = cwd if cwd and Path(cwd).exists() else str(Path.home())
+    try:
+        subprocess.Popen(
+            cmd,
+            cwd=launch_cwd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except Exception as exc:
+        return {'ok': False, 'error': f'failed to launch cfgshell: {exc}'}
+    return {'ok': True}
+
+
 while True:
     try:
         req = _read_message()
@@ -58,8 +81,12 @@ while True:
         _send_message({'ok': False, 'error': f'invalid request: {exc}'})
         continue
 
-    if req.get('action') != 'launch_terminal':
-        _send_message({'ok': False, 'error': 'unsupported action'})
+    action = req.get('action')
+    payload = req.get('payload') or {}
+    if action == 'launch_terminal':
+        _send_message(_handle_launch(payload))
         continue
-
-    _send_message(_handle_launch(req.get('payload') or {}))
+    if action == 'launch_cfgshell':
+        _send_message(_handle_launch_cfgshell(payload))
+        continue
+    _send_message({'ok': False, 'error': 'unsupported action'})
