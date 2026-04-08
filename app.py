@@ -189,6 +189,13 @@ class HapsLockSession:
     io_fd: int
 
 
+@dataclass
+class UserLaunchContext:
+    prefix: list[str]
+    env: dict[str, str]
+    preexec_fn: Any = None
+
+
 class UartStreamManager:
     MAX_LINES_PER_DEVICE = 400
 
@@ -716,11 +723,14 @@ class JobManager:
 
     def _acquire_device_lock(self, job_id: str, payload: dict[str, Any], cfgshell_cmd: list[str], log_file: Any) -> None:
         master_fd, slave_fd = pty.openpty()
+        user_ctx = self._build_user_launch_context(payload)
         process = subprocess.Popen(
-            cfgshell_cmd,
+            [*user_ctx.prefix, *cfgshell_cmd],
             stdin=slave_fd,
             stdout=slave_fd,
             stderr=slave_fd,
+            env=user_ctx.env,
+            preexec_fn=user_ctx.preexec_fn,
         )
         os.close(slave_fd)
         try:
@@ -839,7 +849,7 @@ class JobManager:
                 if "HAPS100" in haps_platform:
                     db_load_cmd.append(hmf_txt)
                 self._log_stage_timestamp(log_file, "load_db", "start")
-                rc1 = subprocess.run(db_load_cmd, stdout=log_file, stderr=log_file, text=True).returncode
+                rc1 = self._run_cfgshell_script(payload, db_load_cmd, log_file)
                 self._log_stage_timestamp(log_file, "load_db", "end")
                 if rc1 != 0:
                     self._write_process_log(log_file, f"[HAPS_LOCK] HAPS_DB load failed, exit={rc1}")
@@ -878,7 +888,7 @@ class JobManager:
                     dedup_thread = threading.Thread(target=_collect_img_signature, daemon=True)
                     dedup_thread.start()
                     self._log_stage_timestamp(log_file, "load_img", "start")
-                    rc_img = subprocess.run([*cfgshell_cmd, imgload_script, img_file], stdout=log_file, stderr=log_file, text=True).returncode
+                    rc_img = self._run_cfgshell_script(payload, [*cfgshell_cmd, imgload_script, img_file], log_file)
                     self._log_stage_timestamp(log_file, "load_img", "end")
                     dedup_thread.join()
                     if "signature" in dedup_result:
@@ -916,7 +926,7 @@ class JobManager:
                     return
 
                 self._log_stage_timestamp(log_file, "reset", "start")
-                rc2 = subprocess.run([*cfgshell_cmd, reset_script], stdout=log_file, stderr=log_file, text=True).returncode
+                rc2 = self._run_cfgshell_script(payload, [*cfgshell_cmd, reset_script], log_file)
                 self._log_stage_timestamp(log_file, "reset", "end")
                 if rc2 != 0:
                     self._write_process_log(log_file, f"[HAPS_LOCK] HAPS_ENV reset failed, exit={rc2}")
@@ -981,6 +991,56 @@ class JobManager:
                     log_file.close()
                 except Exception:
                     pass
+
+    @staticmethod
+    def _build_user_launch_context(payload: dict[str, Any]) -> UserLaunchContext:
+        user_name = str(payload.get("user_id") or "").strip()
+        passwd_entry = _username_to_passwd(user_name) if user_name else None
+        if passwd_entry is None:
+            return UserLaunchContext(prefix=[], env=os.environ.copy())
+
+        target_uid = int(passwd_entry.pw_uid)
+        target_gid = int(passwd_entry.pw_gid)
+        current_euid = os.geteuid()
+        env = os.environ.copy()
+        env.update({
+            "HOME": passwd_entry.pw_dir,
+            "LOGNAME": passwd_entry.pw_name,
+            "USER": passwd_entry.pw_name,
+        })
+
+        runtime_dir = f"/run/user/{target_uid}"
+        if os.path.isdir(runtime_dir):
+            env.setdefault("XDG_RUNTIME_DIR", runtime_dir)
+
+        if current_euid == 0:
+            def _drop_privileges() -> None:
+                os.initgroups(passwd_entry.pw_name, target_gid)
+                os.setgid(target_gid)
+                os.setuid(target_uid)
+
+            return UserLaunchContext(prefix=[], env=env, preexec_fn=_drop_privileges)
+
+        if current_euid == target_uid:
+            return UserLaunchContext(prefix=[], env=env)
+
+        sudo_bin = shutil.which("sudo")
+        if not sudo_bin:
+            raise RuntimeError(
+                f"user mismatch({current_euid}->{target_uid}) and sudo unavailable for HAPS_CONFPROSH launch"
+            )
+        return UserLaunchContext(prefix=[sudo_bin, "-n", "-u", passwd_entry.pw_name, "--"], env=env)
+
+    def _run_cfgshell_script(self, payload: dict[str, Any], cmd: list[str], log_file: Any) -> int:
+        user_ctx = self._build_user_launch_context(payload)
+        return subprocess.run(
+            [*user_ctx.prefix, *cmd],
+            stdout=log_file,
+            stderr=log_file,
+            text=True,
+            env=user_ctx.env,
+            preexec_fn=user_ctx.preexec_fn,
+        ).returncode
 
 
     @staticmethod
