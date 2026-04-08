@@ -763,29 +763,32 @@ class JobManager:
     def _acquire_device_lock(self, job_id: str, payload: dict[str, Any], cfgshell_cmd: list[str], log_file: Any) -> None:
         user_id = str(payload.get("user_id") or "").strip()
         if user_id:
-            task = native_task_broker.submit(
-                user_id=user_id,
-                action="acquire_haps_lock",
-                payload={"cmd": cfgshell_cmd, "haps_platform": str(payload.get("haps_platform") or "")},
-            )
-            result = native_task_broker.wait(task.id, timeout_seconds=120.0)
-            if not result.get("ok"):
-                raise RuntimeError(str(result.get("error") or "acquire_haps_lock failed"))
-            device_id = str(result.get("device_id") or "")
-            handle = str(result.get("handle") or "")
-            session_id = str(result.get("session_id") or "")
-            if not (device_id and handle and session_id):
-                raise RuntimeError("acquire_haps_lock returned incomplete session info")
-            with self._lock:
-                self._haps_lock_sessions[job_id] = HapsLockSession(
-                    process=None,
-                    device_id=device_id,
-                    handle=handle,
-                    io_fd=None,
-                    native_session_id=session_id,
+            try:
+                task = native_task_broker.submit(
+                    user_id=user_id,
+                    action="acquire_haps_lock",
+                    payload={"cmd": cfgshell_cmd, "haps_platform": str(payload.get("haps_platform") or "")},
                 )
-            self._write_process_log(log_file, f"[HAPS_LOCK] native acquired job={job_id} device={device_id} handle={handle}")
-            return
+                result = native_task_broker.wait(task.id, timeout_seconds=120.0)
+                if not result.get("ok"):
+                    raise RuntimeError(str(result.get("error") or "acquire_haps_lock failed"))
+                device_id = str(result.get("device_id") or "")
+                handle = str(result.get("handle") or "")
+                session_id = str(result.get("session_id") or "")
+                if not (device_id and handle and session_id):
+                    raise RuntimeError("acquire_haps_lock returned incomplete session info")
+                with self._lock:
+                    self._haps_lock_sessions[job_id] = HapsLockSession(
+                        process=None,
+                        device_id=device_id,
+                        handle=handle,
+                        io_fd=None,
+                        native_session_id=session_id,
+                    )
+                self._write_process_log(log_file, f"[HAPS_LOCK] native acquired job={job_id} device={device_id} handle={handle}")
+                return
+            except Exception as exc:
+                self._write_process_log(log_file, f"[HAPS_LOCK] native acquire failed, fallback to backend lock: {exc}")
 
         master_fd, slave_fd = pty.openpty()
         user_ctx = self._build_user_launch_context(payload)
