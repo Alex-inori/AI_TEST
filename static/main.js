@@ -82,10 +82,16 @@ async function pollNativeTaskQueueOnce() {
     const action = String(task.action || '').trim();
     if (!action) return;
     const extResult = await requestViaExtension(action, task.payload || {}, 300000);
+    const resultPayload = {
+      ...extResult,
+      action,
+      task_id: String(task.id),
+      finished_at: new Date().toISOString(),
+    };
     await fetch(buildApiUrl(`/api/native/tasks/${encodeURIComponent(task.id)}/result`), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(extResult),
+      body: JSON.stringify(resultPayload),
     });
   } catch (_) {
     // ignore polling errors to avoid impacting normal UI interactions

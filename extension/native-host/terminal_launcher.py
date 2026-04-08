@@ -96,7 +96,9 @@ def _handle_run_cfgshell_sync(payload: dict) -> dict:
         return {'ok': False, 'error': f'failed to run cfgshell sync: {exc}'}
     if log_file:
         try:
-            with open(log_file, 'a', encoding='utf-8') as handle:
+            log_path_obj = Path(log_file).expanduser()
+            log_path_obj.parent.mkdir(parents=True, exist_ok=True)
+            with log_path_obj.open('a', encoding='utf-8') as handle:
                 handle.write(f"[NATIVE_HOST] cmd={' '.join(cmd)} rc={completed.returncode}\n")
                 if completed.stdout:
                     handle.write(completed.stdout[-4000:])

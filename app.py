@@ -852,6 +852,7 @@ class JobManager:
             payload = dict(job.payload or {})
 
         log_file = None
+        process_log_path_text = ""
         lock_acquired = False
         try:
             log_path = str(payload.get("log_path") or "").strip()
@@ -859,11 +860,10 @@ class JobManager:
             lock_cfgshell_cmd: list[str] | None = None
             if log_path:
                 log_dir = Path(log_path).expanduser()
-                log_dir.mkdir(parents=True, exist_ok=True)
                 jobs_id = str(payload.get("jobs_id") or job_id)
                 safe_jobs_id = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in jobs_id)
                 process_log_path = log_dir / f"{safe_jobs_id}.log"
-                log_file = process_log_path.open("a", encoding="utf-8")
+                process_log_path_text = str(process_log_path)
 
             lock_settings = self._read_haps_settings()
             lock_cfgshell_cmd = list(lock_settings.get("HAPS_CONFPROSH_CMD") or [])
@@ -887,7 +887,7 @@ class JobManager:
                 if "HAPS100" in haps_platform:
                     db_load_cmd.append(hmf_txt)
                 self._log_stage_timestamp(log_file, "load_db", "start")
-                db_result = self._run_cfgshell_script(payload, db_load_cmd, log_file)
+                db_result = self._run_cfgshell_script(payload, db_load_cmd, log_file, log_file_path=process_log_path_text)
                 rc1 = int(db_result.get("returncode", 1))
                 self._log_stage_timestamp(log_file, "load_db", "end")
                 if rc1 != 0:
@@ -918,6 +918,7 @@ class JobManager:
                         payload,
                         [*cfgshell_cmd, imgload_script, img_file],
                         log_file,
+                        log_file_path=process_log_path_text,
                         meta={"sw_img_check_file": img_file},
                     )
                     rc_img = int(img_result.get("returncode", 1))
@@ -947,7 +948,12 @@ class JobManager:
                     return
 
                 self._log_stage_timestamp(log_file, "reset", "start")
-                reset_result = self._run_cfgshell_script(payload, [*cfgshell_cmd, reset_script], log_file)
+                reset_result = self._run_cfgshell_script(
+                    payload,
+                    [*cfgshell_cmd, reset_script],
+                    log_file,
+                    log_file_path=process_log_path_text,
+                )
                 rc2 = int(reset_result.get("returncode", 1))
                 self._log_stage_timestamp(log_file, "reset", "end")
                 if rc2 != 0:
@@ -1056,6 +1062,7 @@ class JobManager:
         payload: dict[str, Any],
         cmd: list[str],
         log_file: Any,
+        log_file_path: str = "",
         meta: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         user_id = str(payload.get("user_id") or "").strip()
@@ -1077,7 +1084,7 @@ class JobManager:
             payload={
                 "cmd": cmd,
                 "cwd": str(Path.home()),
-                "log_file": str(getattr(log_file, "name", "") or ""),
+                "log_file": str(log_file_path or ""),
                 "meta": dict(meta or {}),
             },
         )
@@ -1960,8 +1967,6 @@ def submit_jobs(payload: SubmitJobsRequest, request: Request) -> dict[str, Any]:
                 data["user_id"],
                 data["jobs_id"],
             )
-            if data["log_path"]:
-                Path(data["log_path"]).mkdir(parents=True, exist_ok=True)
             if "HAPS100" in str(data.get("haps_platform") or ""):
                 data["haps_hmf_txt"] = str(settings.get("HAPS_HMF_TXT") or "").strip()
 
