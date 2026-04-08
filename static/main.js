@@ -30,35 +30,44 @@ function wsBaseUrl() {
 function buildApiUrl(path) {
   return `${serviceBaseUrl()}${path}`;
 }
-function tryLaunchTerminalByExtension(launchPayload, timeoutMs = 1200) {
+function requestViaExtension(action, payload, timeoutMs = 1200) {
   return new Promise((resolve) => {
-    if (!launchPayload || typeof window.postMessage !== 'function') {
-      resolve(false);
+    if (!payload || typeof window.postMessage !== 'function') {
+      resolve({ ok: false, error: 'extension unavailable', data: null });
       return;
     }
-    const reqId = `terminal-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const reqId = `ext-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     let done = false;
-    const finish = (ok) => {
+    const finish = (result) => {
       if (done) return;
       done = true;
       window.removeEventListener('message', onMessage);
       window.clearTimeout(timer);
-      resolve(!!ok);
+      resolve(result);
     };
     const onMessage = (event) => {
       const msg = event && event.data;
       if (!msg || msg.type !== 'CFGSHELL_TERMINAL_LAUNCH_RESULT') return;
       if (String(msg.request_id || '') !== reqId) return;
-      finish(Boolean(msg.ok));
+      finish({
+        ok: Boolean(msg.ok),
+        error: String(msg.error || ''),
+        data: msg.data || null,
+      });
     };
-    const timer = window.setTimeout(() => finish(false), timeoutMs);
+    const timer = window.setTimeout(() => finish({ ok: false, error: 'extension timeout', data: null }), timeoutMs);
     window.addEventListener('message', onMessage);
     window.postMessage({
       type: 'CFGSHELL_TERMINAL_LAUNCH',
       request_id: reqId,
-      payload: launchPayload,
+      action: String(action || 'launch_terminal'),
+      payload,
     }, '*');
   });
+}
+async function tryLaunchTerminalByExtension(launchPayload, timeoutMs = 1200) {
+  const result = await requestViaExtension('launch_terminal', launchPayload, timeoutMs);
+  return !!result.ok;
 }
 function trimOldestCreateJobsIfNeeded(limit = createJobsMaxNum) {
   const max = Number.parseInt(limit, 10);
@@ -552,6 +561,8 @@ function findParentPath(pathValue) {
 }
 async function loadFsEntriesWithFallback(path, mode) {
   const trimmed = (path || '').trim();
+  const extResult = await requestViaExtension('list_dir', { path: trimmed, mode }, 1200);
+  if (extResult.ok && extResult.data && Array.isArray(extResult.data.entries)) return extResult.data;
   try {
     return await loadFsEntries(trimmed, mode);
   } catch (error) {

@@ -72,6 +72,42 @@ def _handle_launch_cfgshell(payload: dict) -> dict:
     return {'ok': True}
 
 
+def _handle_list_dir(payload: dict) -> dict:
+    mode = str((payload or {}).get('mode') or 'file').strip() or 'file'
+    raw_path = str((payload or {}).get('path') or '').strip()
+    target = Path(raw_path).expanduser() if raw_path else Path.home()
+
+    try:
+        resolved = target.resolve()
+    except OSError:
+        return {'ok': False, 'error': 'invalid path'}
+    if not resolved.exists() or not resolved.is_dir():
+        return {'ok': False, 'error': 'path is not a directory'}
+
+    entries = []
+    try:
+        for entry in sorted(resolved.iterdir(), key=lambda item: (not item.is_dir(), item.name.lower())):
+            if entry.is_dir():
+                entries.append({'name': entry.name, 'path': str(entry), 'type': 'directory'})
+            elif mode == 'file' and entry.is_file():
+                entries.append({'name': entry.name, 'path': str(entry), 'type': 'file'})
+            if len(entries) >= 200:
+                break
+    except PermissionError:
+        return {'ok': False, 'error': 'permission denied'}
+
+    parent = str(resolved.parent) if resolved.parent != resolved else ''
+    return {
+        'ok': True,
+        'data': {
+            'cwd': str(resolved),
+            'parent': parent,
+            'mode': mode,
+            'entries': entries,
+        },
+    }
+
+
 while True:
     try:
         req = _read_message()
@@ -88,5 +124,8 @@ while True:
         continue
     if action == 'launch_cfgshell':
         _send_message(_handle_launch_cfgshell(payload))
+        continue
+    if action == 'list_dir':
+        _send_message(_handle_list_dir(payload))
         continue
     _send_message({'ok': False, 'error': 'unsupported action'})

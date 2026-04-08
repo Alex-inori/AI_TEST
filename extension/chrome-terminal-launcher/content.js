@@ -23,6 +23,7 @@
             request_id: String(data.request_id || ''),
             ok,
             error: runtimeErr ? runtimeErr.message : (response && response.error) || '',
+            data: (response && response.data) || null,
           },
           '*',
         );

@@ -18,7 +18,7 @@ function launchViaNative(action, payload) {
           resolve({ ok: false, error: (response && response.error) || 'native host rejected request' });
           return;
         }
-        resolve({ ok: true });
+        resolve({ ok: true, data: response.data || null });
       },
     );
   });

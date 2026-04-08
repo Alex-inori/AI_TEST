@@ -164,6 +164,7 @@ chmod +x extension/native-host/terminal_launcher.py
 
 - 页面会先尝试通过 extension + native host 在**前端用户会话**中启动 `TERMINAL`。
 - 如果 extension / native host 没有就绪，页面会自动回退到后端现有启动逻辑。
-- Native Host 同时支持两种 action：
+- Native Host 同时支持三种 action：
   - `launch_terminal`：启动终端可执行文件
   - `launch_cfgshell`：按传入 `cmd`（例如 `HAPS_CONFPROSH_CMD`）直接启动 cfgshell 进程
+  - `list_dir`：按前端本地用户权限读取目录，返回文件浏览器需要的 `cwd/parent/entries`
