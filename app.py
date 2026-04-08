@@ -1784,7 +1784,7 @@ def get_directories() -> dict[str, list[str]]:
 
 
 @app.get("/api/fs")
-def get_fs_entries(path: str = "", mode: str = "file", request: Request | None = None) -> dict[str, Any]:
+def get_fs_entries(request: Request, path: str = "", mode: str = "file") -> dict[str, Any]:
     viewer_user = get_system_user_id(request)
     viewer_pwd = _username_to_passwd(viewer_user)
     viewer_home = str(Path(viewer_pwd.pw_dir).expanduser()) if viewer_pwd is not None else str(Path.home())
