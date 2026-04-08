@@ -97,6 +97,39 @@ def _handle_run_cfgshell_sync(payload: dict) -> dict:
     }
 
 
+def _handle_validate_job_payload(payload: dict) -> dict:
+    job = dict((payload or {}).get('payload') or {})
+    db_enabled = bool(job.get('database_path_enabled', False))
+    database_path = str(job.get('database_path') or '').strip()
+    if db_enabled:
+        if not database_path:
+            return {'ok': False, 'error': 'database_path is enabled but empty'}
+        db_path = Path(database_path).expanduser()
+        if not db_path.exists():
+            return {'ok': False, 'error': f'database_path not found: {db_path}'}
+
+    reset_enabled = bool(job.get('reset_script_enabled', False))
+    reset_script = str(job.get('reset_script') or '').strip()
+    if reset_enabled:
+        reset_path = Path(reset_script).expanduser()
+        if not reset_script:
+            return {'ok': False, 'error': 'reset_script is enabled but empty'}
+        if not reset_path.exists() or not reset_path.is_file() or reset_path.suffix.lower() != '.tcl':
+            return {'ok': False, 'error': f'reset_script invalid: {reset_path}'}
+
+    img_enabled = bool(job.get('imgload_script_enabled', False))
+    img_script = str(job.get('imgload_script') or '').strip()
+    img_file = str(job.get('img_file') or '').strip()
+    if img_enabled:
+        script_path = Path(img_script).expanduser()
+        img_path = Path(img_file).expanduser()
+        if not img_script or not script_path.exists() or not script_path.is_file() or script_path.suffix.lower() != '.tcl':
+            return {'ok': False, 'error': f'imgload_script invalid: {script_path}'}
+        if not img_file or not img_path.exists() or not img_path.is_file() or img_path.suffix.lower() not in {'.img', '.bin'}:
+            return {'ok': False, 'error': f'img_file invalid: {img_path}'}
+    return {'ok': True}
+
+
 def _handle_list_dir(payload: dict) -> dict:
     mode = str((payload or {}).get('mode') or 'file').strip() or 'file'
     raw_path = str((payload or {}).get('path') or '').strip()
@@ -177,6 +210,9 @@ while True:
         continue
     if action == 'run_cfgshell_sync':
         _send_message(_handle_run_cfgshell_sync(payload))
+        continue
+    if action == 'validate_job_payload':
+        _send_message(_handle_validate_job_payload(payload))
         continue
     if action == 'list_dir':
         _send_message(_handle_list_dir(payload))

@@ -1564,6 +1564,7 @@ def validate_submit_payload(
     payload: dict[str, Any],
     settings: dict[str, Any],
     used_uart_paths: set[str] | None = None,
+    check_paths: bool = True,
 ) -> None:
     haps_platform = str(payload.get("haps_platform") or "").strip()
     allowed_platforms = [str(item).strip() for item in list(settings.get("HAPS_PLATFORM") or []) if str(item).strip()]
@@ -1577,9 +1578,10 @@ def validate_submit_payload(
     if db_enabled:
         if not db_path_text:
             raise ValueError("database_path is enabled but empty")
-        database_path = Path(db_path_text).expanduser()
-        if not database_path.exists():
-            raise ValueError(f"database_path not found: {database_path}")
+        if check_paths:
+            database_path = Path(db_path_text).expanduser()
+            if not database_path.exists():
+                raise ValueError(f"database_path not found: {database_path}")
 
     if "HAPS100" in haps_platform and db_enabled:
         hmf_txt = str(payload.get("haps_hmf_txt") or "").strip()
@@ -1588,15 +1590,16 @@ def validate_submit_payload(
 
     reset_enabled = bool(payload.get("reset_script_enabled", False))
     imgload_enabled = bool(payload.get("imgload_script_enabled", False))
-    if reset_enabled:
+    if reset_enabled and check_paths:
         _validate_tcl_file(str(payload.get("reset_script") or ""), field_name="reset_script")
     if imgload_enabled:
         if not db_enabled:
             raise ValueError("imgload_script_enabled requires database_path_enabled=true")
         if not reset_enabled:
             raise ValueError("imgload_script_enabled requires reset_script_enabled=true")
-        _validate_tcl_file(str(payload.get("imgload_script") or ""), field_name="imgload_script")
-        _validate_img_file(str(payload.get("img_file") or ""), field_name="img_file")
+        if check_paths:
+            _validate_tcl_file(str(payload.get("imgload_script") or ""), field_name="imgload_script")
+            _validate_img_file(str(payload.get("img_file") or ""), field_name="img_file")
 
     seen_in_job: set[str] = set()
     normalized: list[str] = []
@@ -1980,7 +1983,15 @@ def submit_jobs(payload: SubmitJobsRequest, request: Request) -> dict[str, Any]:
             if "HAPS100" in str(data.get("haps_platform") or ""):
                 data["haps_hmf_txt"] = str(settings.get("HAPS_HMF_TXT") or "").strip()
 
-            validate_submit_payload(data, settings=settings, used_uart_paths=used_uart_paths)
+            validate_submit_payload(data, settings=settings, used_uart_paths=used_uart_paths, check_paths=False)
+            native_validate_task = native_task_broker.submit(
+                user_id=data["user_id"],
+                action="validate_job_payload",
+                payload={"payload": data},
+            )
+            native_validate_result = native_task_broker.wait(native_validate_task.id, timeout_seconds=120.0)
+            if not native_validate_result.get("ok"):
+                raise ValueError(str(native_validate_result.get("error") or "native validation failed"))
             data["log_info"] = build_log_info(data.get("log_path", ""))
             result = manager.submit(data)
         except ValueError as exc:
