@@ -13,7 +13,6 @@ import shlex
 import re
 import select
 import pty
-import zlib
 
 try:
     import fcntl
@@ -588,7 +587,6 @@ class JobManager:
         self._waiting_jobs: dict[str, WaitingJobRecord] = {}
         self._waiting_order: list[str] = []
         self._haps_lock_sessions: dict[str, HapsLockSession] = {}
-        self._img_dedup_signatures: set[str] = set()
         self._lock = threading.Lock()
         self._uart_stream = uart_stream
 
@@ -761,22 +759,6 @@ class JobManager:
         timestamp = datetime.now().isoformat(timespec="seconds")
         JobManager._write_process_log(log_file, f"[HAPS_STAGE] stage={stage} event={event} ts={timestamp}")
 
-    @staticmethod
-    def _calculate_img_dedup_signature(file_path: str) -> tuple[str, str]:
-        sample_bytes = 4 * 1024 * 1024
-        file_size = os.path.getsize(file_path)
-        with open(file_path, "rb") as handle:
-            head = handle.read(sample_bytes)
-            tail = b""
-            if file_size > sample_bytes:
-                handle.seek(max(0, file_size - sample_bytes))
-                tail = handle.read(sample_bytes)
-        head_crc = zlib.crc32(head) & 0xFFFFFFFF
-        tail_crc = zlib.crc32(tail) & 0xFFFFFFFF
-        algo = "size+crc32(head4MB,tail4MB)"
-        signature = f"{file_size:016x}-{head_crc:08x}-{tail_crc:08x}"
-        return algo, signature
-
     def _acquire_device_lock(self, job_id: str, payload: dict[str, Any], cfgshell_cmd: list[str], log_file: Any) -> None:
         master_fd, slave_fd = pty.openpty()
         user_ctx = self._build_user_launch_context(payload)
@@ -905,7 +887,8 @@ class JobManager:
                 if "HAPS100" in haps_platform:
                     db_load_cmd.append(hmf_txt)
                 self._log_stage_timestamp(log_file, "load_db", "start")
-                rc1 = self._run_cfgshell_script(payload, db_load_cmd, log_file)
+                db_result = self._run_cfgshell_script(payload, db_load_cmd, log_file)
+                rc1 = int(db_result.get("returncode", 1))
                 self._log_stage_timestamp(log_file, "load_db", "end")
                 if rc1 != 0:
                     self._write_process_log(log_file, f"[HAPS_LOCK] HAPS_DB load failed, exit={rc1}")
@@ -930,36 +913,18 @@ class JobManager:
                             return
                         self._jobs[job_id].status = "Running::Loading SW_IMG"
 
-                    dedup_result: dict[str, str] = {}
-                    dedup_error: dict[str, str] = {}
-
-                    def _collect_img_signature() -> None:
-                        try:
-                            algo, signature = self._calculate_img_dedup_signature(img_file)
-                            dedup_result["algo"] = algo
-                            dedup_result["signature"] = signature
-                        except Exception as exc:
-                            dedup_error["value"] = str(exc)
-
-                    dedup_thread = threading.Thread(target=_collect_img_signature, daemon=True)
-                    dedup_thread.start()
                     self._log_stage_timestamp(log_file, "load_img", "start")
-                    rc_img = self._run_cfgshell_script(payload, [*cfgshell_cmd, imgload_script, img_file], log_file)
+                    img_result = self._run_cfgshell_script(
+                        payload,
+                        [*cfgshell_cmd, imgload_script, img_file],
+                        log_file,
+                        meta={"sw_img_check_file": img_file},
+                    )
+                    rc_img = int(img_result.get("returncode", 1))
                     self._log_stage_timestamp(log_file, "load_img", "end")
-                    dedup_thread.join()
-                    if "signature" in dedup_result:
-                        signature = dedup_result["signature"]
-                        with self._lock:
-                            duplicate = signature in self._img_dedup_signatures
-                            if not duplicate:
-                                self._img_dedup_signatures.add(signature)
-                        dedup_text = "file is remain unchanged" if duplicate else "file is new"
-                        self._write_process_log(
-                            log_file,
-                            f"[HAPS_LOCK] SW_IMG_CHECK algo={dedup_result['algo']} signature={signature} {dedup_text}: {img_file}",
-                        )
-                    elif "value" in dedup_error:
-                        self._write_process_log(log_file, f"[HAPS_LOCK] SW_IMG_CHECK failed: {dedup_error['value']}")
+                    sw_img_check = str(img_result.get("sw_img_check") or "").strip()
+                    if sw_img_check:
+                        self._write_process_log(log_file, f"[HAPS_LOCK] SW_IMG_CHECK {sw_img_check}")
                     if rc_img != 0:
                         self._write_process_log(log_file, f"[HAPS_LOCK] SW_IMG load failed, exit={rc_img}")
                         with self._lock:
@@ -982,7 +947,8 @@ class JobManager:
                     return
 
                 self._log_stage_timestamp(log_file, "reset", "start")
-                rc2 = self._run_cfgshell_script(payload, [*cfgshell_cmd, reset_script], log_file)
+                reset_result = self._run_cfgshell_script(payload, [*cfgshell_cmd, reset_script], log_file)
+                rc2 = int(reset_result.get("returncode", 1))
                 self._log_stage_timestamp(log_file, "reset", "end")
                 if rc2 != 0:
                     self._write_process_log(log_file, f"[HAPS_LOCK] HAPS_ENV reset failed, exit={rc2}")
@@ -1085,30 +1051,46 @@ class JobManager:
             "run service as root or as the target user"
         )
 
-    def _run_cfgshell_script(self, payload: dict[str, Any], cmd: list[str], log_file: Any) -> int:
+    def _run_cfgshell_script(
+        self,
+        payload: dict[str, Any],
+        cmd: list[str],
+        log_file: Any,
+        meta: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         user_id = str(payload.get("user_id") or "").strip()
         if not user_id:
             user_ctx = self._build_user_launch_context(payload)
-            return subprocess.run(
+            completed = subprocess.run(
                 [*user_ctx.prefix, *cmd],
                 stdout=log_file,
                 stderr=log_file,
                 text=True,
                 env=user_ctx.env,
                 preexec_fn=user_ctx.preexec_fn,
-            ).returncode
+            )
+            return {"ok": completed.returncode == 0, "returncode": int(completed.returncode)}
 
         task = native_task_broker.submit(
             user_id=user_id,
             action="run_cfgshell_sync",
-            payload={"cmd": cmd, "cwd": str(Path.home())},
+            payload={
+                "cmd": cmd,
+                "cwd": str(Path.home()),
+                "log_file": str(getattr(log_file, "name", "") or ""),
+                "meta": dict(meta or {}),
+            },
         )
         result = native_task_broker.wait(task.id, timeout_seconds=300.0)
         if log_file is not None:
             self._write_process_log(log_file, f"[NATIVE_TASK] task={task.id} result={result}")
         if not result.get("ok"):
-            return 1
-        return int(result.get("returncode", 0))
+            return {"ok": False, "returncode": 1, "error": str(result.get("error") or "")}
+        return {
+            "ok": True,
+            "returncode": int(result.get("returncode", 0)),
+            "sw_img_check": str(result.get("sw_img_check") or ""),
+        }
 
 
     @staticmethod

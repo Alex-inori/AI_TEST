@@ -170,3 +170,4 @@ chmod +x extension/native-host/terminal_launcher.py
   - `list_dir`：按前端本地用户权限读取目录，返回文件浏览器需要的 `cwd/parent/entries`
 - `validate_job_payload`：在前端本地用户权限下校验 database/reset/imgload/img_file 路径有效性
 - 前端会周期性拉取 `/api/native/next-task`，并通过 extension 调用 native host 执行（如 `run_cfgshell_sync`），再把结果回传到 `/api/native/tasks/{id}/result`，后端仅做流程编排与状态控制。
+- `run_cfgshell_sync` 会在 native host 侧写入命令执行日志（若传入 `log_file`）并在传入 `sw_img_check_file` 时完成 SW_IMG_CHECK。

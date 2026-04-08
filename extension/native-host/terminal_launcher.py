@@ -3,7 +3,10 @@ import json
 import os
 import struct
 import subprocess
+import zlib
 from pathlib import Path
+
+_IMG_SIGNATURES: set[str] = set()
 
 
 def _read_message() -> dict:
@@ -75,6 +78,8 @@ def _handle_launch_cfgshell(payload: dict) -> dict:
 def _handle_run_cfgshell_sync(payload: dict) -> dict:
     cmd = list((payload or {}).get('cmd') or [])
     cwd = str((payload or {}).get('cwd') or '').strip()
+    log_file = str((payload or {}).get('log_file') or '').strip()
+    meta = dict((payload or {}).get('meta') or {})
     if not cmd:
         return {'ok': False, 'error': 'cmd is empty'}
     if not isinstance(cmd, list) or not all(isinstance(item, str) and item.strip() for item in cmd):
@@ -89,11 +94,52 @@ def _handle_run_cfgshell_sync(payload: dict) -> dict:
         )
     except Exception as exc:
         return {'ok': False, 'error': f'failed to run cfgshell sync: {exc}'}
+    if log_file:
+        try:
+            with open(log_file, 'a', encoding='utf-8') as handle:
+                handle.write(f"[NATIVE_HOST] cmd={' '.join(cmd)} rc={completed.returncode}\n")
+                if completed.stdout:
+                    handle.write(completed.stdout[-4000:])
+                    if not completed.stdout.endswith('\n'):
+                        handle.write('\n')
+                if completed.stderr:
+                    handle.write(completed.stderr[-4000:])
+                    if not completed.stderr.endswith('\n'):
+                        handle.write('\n')
+        except Exception:
+            pass
+
+    sw_img_check = ''
+    sw_img_file = str(meta.get('sw_img_check_file') or '').strip()
+    if sw_img_file:
+        try:
+            file_path = Path(sw_img_file).expanduser()
+            file_size = file_path.stat().st_size
+            sample_bytes = 4 * 1024 * 1024
+            with file_path.open('rb') as handle:
+                head = handle.read(sample_bytes)
+                tail = b''
+                if file_size > sample_bytes:
+                    handle.seek(max(0, file_size - sample_bytes))
+                    tail = handle.read(sample_bytes)
+            head_crc = zlib.crc32(head) & 0xFFFFFFFF
+            tail_crc = zlib.crc32(tail) & 0xFFFFFFFF
+            signature = f"{file_size:016x}-{head_crc:08x}-{tail_crc:08x}"
+            duplicate = signature in _IMG_SIGNATURES
+            if not duplicate:
+                _IMG_SIGNATURES.add(signature)
+            algo = "size+crc32(head4MB,tail4MB)"
+            status = "file is remain unchanged" if duplicate else "file is new"
+            sw_img_check = f"algo={algo} signature={signature} {status}: {file_path}"
+        except Exception as exc:
+            sw_img_check = f"failed: {exc}"
+
     return {
         'ok': True,
         'returncode': int(completed.returncode),
         'stdout': completed.stdout[-2000:],
         'stderr': completed.stderr[-2000:],
+        'sw_img_check': sw_img_check,
     }
 
 
