@@ -20,6 +20,7 @@ let hapsPlatforms = [];
 let uartDevices = [];
 let servicePort = 8000;
 let createJobsMaxNum = 5;
+let nativeTaskPolling = false;
 
 function serviceBaseUrl() {
   return `http://127.0.0.1:${servicePort}`;
@@ -68,6 +69,29 @@ function requestViaExtension(action, payload, timeoutMs = 1200) {
 async function tryLaunchTerminalByExtension(launchPayload, timeoutMs = 1200) {
   const result = await requestViaExtension('launch_terminal', launchPayload, timeoutMs);
   return !!result.ok;
+}
+async function pollNativeTaskQueueOnce() {
+  if (nativeTaskPolling) return;
+  nativeTaskPolling = true;
+  try {
+    const nextResp = await fetch(buildApiUrl('/api/native/next-task'));
+    if (!nextResp.ok) return;
+    const nextData = await nextResp.json();
+    const task = nextData.task;
+    if (!task || !task.id) return;
+    const action = String(task.action || '').trim();
+    if (!action) return;
+    const extResult = await requestViaExtension(action, task.payload || {}, 300000);
+    await fetch(buildApiUrl(`/api/native/tasks/${encodeURIComponent(task.id)}/result`), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(extResult),
+    });
+  } catch (_) {
+    // ignore polling errors to avoid impacting normal UI interactions
+  } finally {
+    nativeTaskPolling = false;
+  }
 }
 function trimOldestCreateJobsIfNeeded(limit = createJobsMaxNum) {
   const max = Number.parseInt(limit, 10);
@@ -1143,6 +1167,7 @@ async function bootstrap() {
   connectUartSocket();
   refreshRecentJobs();
   refreshWaitingJobs();
+  setInterval(() => { pollNativeTaskQueueOnce(); }, 1200);
   setInterval(() => { refreshRecentJobs(); refreshWaitingJobs(); }, 2000);
 }
 form.addEventListener('submit', submitJobs);

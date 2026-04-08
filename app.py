@@ -195,6 +195,63 @@ class UserLaunchContext:
     preexec_fn: Any = None
 
 
+@dataclass
+class NativeTaskRecord:
+    id: str
+    user_id: str
+    action: str
+    payload: dict[str, Any]
+    status: str = "pending"
+    result: dict[str, Any] = field(default_factory=dict)
+    event: threading.Event = field(default_factory=threading.Event, repr=False)
+
+
+class NativeTaskBroker:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._tasks: dict[str, NativeTaskRecord] = {}
+        self._order: list[str] = []
+
+    def submit(self, *, user_id: str, action: str, payload: dict[str, Any]) -> NativeTaskRecord:
+        task = NativeTaskRecord(id=str(uuid.uuid4()), user_id=user_id, action=action, payload=payload)
+        with self._lock:
+            self._tasks[task.id] = task
+            self._order.append(task.id)
+        return task
+
+    def claim_next(self, user_id: str) -> NativeTaskRecord | None:
+        with self._lock:
+            for task_id in list(self._order):
+                task = self._tasks.get(task_id)
+                if not task or task.status != "pending":
+                    continue
+                if task.user_id != user_id:
+                    continue
+                task.status = "running"
+                return task
+        return None
+
+    def complete(self, task_id: str, result: dict[str, Any]) -> bool:
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if not task:
+                return False
+            task.status = "done"
+            task.result = result
+            task.event.set()
+            return True
+
+    def wait(self, task_id: str, timeout_seconds: float) -> dict[str, Any]:
+        with self._lock:
+            task = self._tasks.get(task_id)
+        if task is None:
+            return {"ok": False, "error": "task not found"}
+        finished = task.event.wait(timeout=max(0.1, timeout_seconds))
+        if not finished:
+            return {"ok": False, "error": "native task timeout"}
+        return dict(task.result or {})
+
+
 class UartStreamManager:
     MAX_LINES_PER_DEVICE = 400
 
@@ -1029,15 +1086,29 @@ class JobManager:
         )
 
     def _run_cfgshell_script(self, payload: dict[str, Any], cmd: list[str], log_file: Any) -> int:
-        user_ctx = self._build_user_launch_context(payload)
-        return subprocess.run(
-            [*user_ctx.prefix, *cmd],
-            stdout=log_file,
-            stderr=log_file,
-            text=True,
-            env=user_ctx.env,
-            preexec_fn=user_ctx.preexec_fn,
-        ).returncode
+        user_id = str(payload.get("user_id") or "").strip()
+        if not user_id:
+            user_ctx = self._build_user_launch_context(payload)
+            return subprocess.run(
+                [*user_ctx.prefix, *cmd],
+                stdout=log_file,
+                stderr=log_file,
+                text=True,
+                env=user_ctx.env,
+                preexec_fn=user_ctx.preexec_fn,
+            ).returncode
+
+        task = native_task_broker.submit(
+            user_id=user_id,
+            action="run_cfgshell_sync",
+            payload={"cmd": cmd, "cwd": str(Path.home())},
+        )
+        result = native_task_broker.wait(task.id, timeout_seconds=300.0)
+        if log_file is not None:
+            self._write_process_log(log_file, f"[NATIVE_TASK] task={task.id} result={result}")
+        if not result.get("ok"):
+            return 1
+        return int(result.get("returncode", 0))
 
 
     @staticmethod
@@ -1683,6 +1754,7 @@ app = FastAPI(title="HAPS Jobs Console Platform")
 app.mount("/static", StaticFiles(directory=APP_ROOT / "static"), name="static")
 uart_stream_manager = UartStreamManager()
 manager = JobManager(uart_stream_manager)
+native_task_broker = NativeTaskBroker()
 
 
 @app.on_event("startup")
@@ -2015,6 +2087,30 @@ def open_job_terminal(job_id: str, request: Request) -> dict[str, Any]:
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"failed to open terminal: {exc}") from exc
 
+    return {"ok": True}
+
+
+@app.get("/api/native/next-task")
+def get_next_native_task(request: Request) -> dict[str, Any]:
+    user_id = get_system_user_id(request)
+    task = native_task_broker.claim_next(user_id)
+    if task is None:
+        return {"ok": True, "task": None}
+    return {
+        "ok": True,
+        "task": {
+            "id": task.id,
+            "action": task.action,
+            "payload": task.payload,
+        },
+    }
+
+
+@app.post("/api/native/tasks/{task_id}/result")
+def report_native_task_result(task_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    completed = native_task_broker.complete(task_id, payload or {})
+    if not completed:
+        raise HTTPException(status_code=404, detail="task not found")
     return {"ok": True}
 
 

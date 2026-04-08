@@ -72,6 +72,31 @@ def _handle_launch_cfgshell(payload: dict) -> dict:
     return {'ok': True}
 
 
+def _handle_run_cfgshell_sync(payload: dict) -> dict:
+    cmd = list((payload or {}).get('cmd') or [])
+    cwd = str((payload or {}).get('cwd') or '').strip()
+    if not cmd:
+        return {'ok': False, 'error': 'cmd is empty'}
+    if not isinstance(cmd, list) or not all(isinstance(item, str) and item.strip() for item in cmd):
+        return {'ok': False, 'error': 'cmd must be a non-empty string list'}
+    launch_cwd = cwd if cwd and Path(cwd).exists() else str(Path.home())
+    try:
+        completed = subprocess.run(
+            cmd,
+            cwd=launch_cwd,
+            text=True,
+            capture_output=True,
+        )
+    except Exception as exc:
+        return {'ok': False, 'error': f'failed to run cfgshell sync: {exc}'}
+    return {
+        'ok': True,
+        'returncode': int(completed.returncode),
+        'stdout': completed.stdout[-2000:],
+        'stderr': completed.stderr[-2000:],
+    }
+
+
 def _handle_list_dir(payload: dict) -> dict:
     mode = str((payload or {}).get('mode') or 'file').strip() or 'file'
     raw_path = str((payload or {}).get('path') or '').strip()
@@ -149,6 +174,9 @@ while True:
         continue
     if action == 'launch_cfgshell':
         _send_message(_handle_launch_cfgshell(payload))
+        continue
+    if action == 'run_cfgshell_sync':
+        _send_message(_handle_run_cfgshell_sync(payload))
         continue
     if action == 'list_dir':
         _send_message(_handle_list_dir(payload))
