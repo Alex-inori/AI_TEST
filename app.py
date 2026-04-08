@@ -5,7 +5,6 @@ import asyncio
 import os
 import pwd
 import socket
-import shutil
 import subprocess
 import threading
 import uuid
@@ -1024,12 +1023,10 @@ class JobManager:
         if current_euid == target_uid:
             return UserLaunchContext(prefix=[], env=env)
 
-        sudo_bin = shutil.which("sudo")
-        if not sudo_bin:
-            raise RuntimeError(
-                f"user mismatch({current_euid}->{target_uid}) and sudo unavailable for HAPS_CONFPROSH launch"
-            )
-        return UserLaunchContext(prefix=[sudo_bin, "-n", "-u", passwd_entry.pw_name, "--"], env=env)
+        raise RuntimeError(
+            "service user does not match HAPS_CONFPROSH owner and cannot switch user; "
+            "run service as root or as the target user"
+        )
 
     def _run_cfgshell_script(self, payload: dict[str, Any], cmd: list[str], log_file: Any) -> int:
         user_ctx = self._build_user_launch_context(payload)
@@ -1972,46 +1969,24 @@ def open_job_terminal(job_id: str, request: Request) -> dict[str, Any]:
         terminal_env.setdefault("XAUTHORITY", xauth_path)
 
     try:
-        if preexec_fn is not None or current_euid == target_uid:
-            subprocess.Popen(  # noqa: S603
-                [terminal_path],  # noqa: S607
-                cwd=launch_cwd,
-                env=terminal_env,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                preexec_fn=preexec_fn,
-                start_new_session=True,
+        if preexec_fn is None and current_euid != target_uid:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "service user does not match terminal owner and cannot switch user; "
+                    "run service as root or as the target user"
+                ),
             )
-        else:
-            sudo_bin = shutil.which("sudo")
-            if not sudo_bin:
-                raise HTTPException(
-                    status_code=403,
-                    detail=(
-                        "service user differs from terminal owner and sudo is unavailable; "
-                        "run service as root or configure sudo -u for terminal launch"
-                    ),
-                )
-            cmd = f"cd {shlex.quote(launch_cwd)} && exec {shlex.quote(str(terminal_path))}"
-            env_items = [
-                f"HOME={target_pwd.pw_dir}",
-                f"LOGNAME={target_pwd.pw_name}",
-                f"USER={target_pwd.pw_name}",
-            ]
-            if terminal_env.get("DISPLAY"):
-                env_items.append(f"DISPLAY={terminal_env['DISPLAY']}")
-            if terminal_env.get("XAUTHORITY"):
-                env_items.append(f"XAUTHORITY={terminal_env['XAUTHORITY']}")
-            if terminal_env.get("XDG_RUNTIME_DIR"):
-                env_items.append(f"XDG_RUNTIME_DIR={terminal_env['XDG_RUNTIME_DIR']}")
-            subprocess.Popen(  # noqa: S603
-                [sudo_bin, "-n", "-u", target_pwd.pw_name, "env", *env_items, "bash", "-lc", cmd],  # noqa: S607
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-            )
+        subprocess.Popen(  # noqa: S603
+            [terminal_path],  # noqa: S607
+            cwd=launch_cwd,
+            env=terminal_env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            preexec_fn=preexec_fn,
+            start_new_session=True,
+        )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"failed to open terminal: {exc}") from exc
 
