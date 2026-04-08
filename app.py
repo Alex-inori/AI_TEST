@@ -181,10 +181,11 @@ class WaitingJobRecord:
 
 @dataclass
 class HapsLockSession:
-    process: subprocess.Popen[str]
+    process: subprocess.Popen[str] | None
     device_id: str
     handle: str
-    io_fd: int
+    io_fd: int | None
+    native_session_id: str = ""
 
 
 @dataclass
@@ -760,6 +761,32 @@ class JobManager:
         JobManager._write_process_log(log_file, f"[HAPS_STAGE] stage={stage} event={event} ts={timestamp}")
 
     def _acquire_device_lock(self, job_id: str, payload: dict[str, Any], cfgshell_cmd: list[str], log_file: Any) -> None:
+        user_id = str(payload.get("user_id") or "").strip()
+        if user_id:
+            task = native_task_broker.submit(
+                user_id=user_id,
+                action="acquire_haps_lock",
+                payload={"cmd": cfgshell_cmd, "haps_platform": str(payload.get("haps_platform") or "")},
+            )
+            result = native_task_broker.wait(task.id, timeout_seconds=120.0)
+            if not result.get("ok"):
+                raise RuntimeError(str(result.get("error") or "acquire_haps_lock failed"))
+            device_id = str(result.get("device_id") or "")
+            handle = str(result.get("handle") or "")
+            session_id = str(result.get("session_id") or "")
+            if not (device_id and handle and session_id):
+                raise RuntimeError("acquire_haps_lock returned incomplete session info")
+            with self._lock:
+                self._haps_lock_sessions[job_id] = HapsLockSession(
+                    process=None,
+                    device_id=device_id,
+                    handle=handle,
+                    io_fd=None,
+                    native_session_id=session_id,
+                )
+            self._write_process_log(log_file, f"[HAPS_LOCK] native acquired job={job_id} device={device_id} handle={handle}")
+            return
+
         master_fd, slave_fd = pty.openpty()
         user_ctx = self._build_user_launch_context(payload)
         process = subprocess.Popen(
@@ -806,23 +833,39 @@ class JobManager:
         session = self._haps_lock_sessions.pop(job_id, None)
         if not session:
             return
+        if session.native_session_id:
+            job = self._jobs.get(job_id)
+            user_id = str(((job.payload if job else {}) or {}).get("user_id") or "")
+            if user_id:
+                task = native_task_broker.submit(
+                    user_id=user_id,
+                    action="release_haps_lock",
+                    payload={"session_id": session.native_session_id, "handle": session.handle},
+                )
+                result = native_task_broker.wait(task.id, timeout_seconds=30.0)
+                self._write_process_log(log_file, f"[HAPS_LOCK] native released session={session.native_session_id} result={result}")
+            return
+
         try:
-            self._cfgshell_eval(session.process, session.io_fd, f"cfg_close {session.handle}", timeout_seconds=10)
+            self._cfgshell_eval(session.process, int(session.io_fd or -1), f"cfg_close {session.handle}", timeout_seconds=10)
             self._write_process_log(log_file, f"[HAPS_LOCK] released job={job_id} handle={session.handle}")
         except Exception as exc:
             self._write_process_log(log_file, f"[HAPS_LOCK] release failed job={job_id}: {exc}")
         finally:
             try:
-                os.close(session.io_fd)
+                if session.io_fd is not None:
+                    os.close(session.io_fd)
             except Exception:
                 pass
             try:
-                session.process.terminate()
-                session.process.wait(timeout=3)
+                if session.process is not None:
+                    session.process.terminate()
+                    session.process.wait(timeout=3)
             except Exception:
                 try:
-                    session.process.kill()
-                    session.process.wait(timeout=3)
+                    if session.process is not None:
+                        session.process.kill()
+                        session.process.wait(timeout=3)
                 except Exception:
                     pass
 

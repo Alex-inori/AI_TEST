@@ -3,10 +3,16 @@ import json
 import os
 import struct
 import subprocess
+import re
+import select
+import time
+import pty
 import zlib
+import uuid
 from pathlib import Path
 
 _IMG_SIGNATURES: set[str] = set()
+_HAPS_LOCK_SESSIONS: dict[str, dict] = {}
 
 
 def _read_message() -> dict:
@@ -178,6 +184,124 @@ def _handle_validate_job_payload(payload: dict) -> dict:
     return {'ok': True}
 
 
+def _cfgshell_eval(proc, io_fd: int, command: str, timeout_seconds: float = 20) -> str:
+    for _ in range(8):
+        readable, _, _ = select.select([io_fd], [], [], 0.05)
+        if not readable:
+            break
+        drained = os.read(io_fd, 4096)
+        if not drained:
+            break
+    os.write(io_fd, f"{command}\n".encode("utf-8"))
+    deadline = time.monotonic() + max(1.0, timeout_seconds)
+    raw_chunks = []
+    saw_output = False
+    last_output = time.monotonic()
+    while time.monotonic() < deadline:
+        if proc.poll() is not None and not saw_output:
+            raise RuntimeError("cfgshell exited unexpectedly")
+        readable, _, _ = select.select([io_fd], [], [], 0.2)
+        if not readable:
+            if saw_output and (time.monotonic() - last_output) >= 0.5:
+                break
+            continue
+        chunk = os.read(io_fd, 4096)
+        if not chunk:
+            continue
+        raw_chunks.append(chunk.decode("utf-8", errors="replace"))
+        saw_output = True
+        last_output = time.monotonic()
+    if not saw_output:
+        raise TimeoutError(f"cfgshell command timeout: {command}")
+    lines = [line.strip("\r") for line in "".join(raw_chunks).strip().splitlines()]
+    filtered = [line for line in lines if line.strip() and line.strip() != command.strip()]
+    return "\n".join(filtered).strip() if filtered else "".join(raw_chunks).strip()
+
+
+def _extract_available_device(cfg_scan_output: str, haps_platform: str) -> str | None:
+    normalized = " ".join(str(cfg_scan_output or "").split())
+    preferred_family = ""
+    match = re.search(r"(HAPS\d+)", str(haps_platform or "").upper())
+    if match:
+        preferred_family = match.group(1)
+    fallback = None
+    for matched in re.finditer(r"DEVICE\s+(\S+).*?TYPE\s+(\S+).*?STATE\s+(\S+)", normalized):
+        device_id, device_type, state = matched.groups()
+        if not state.startswith("available"):
+            continue
+        if fallback is None:
+            fallback = device_id
+        if preferred_family and preferred_family in device_type.upper():
+            return device_id
+    return fallback
+
+
+def _extract_cfg_handle(cfg_open_output: str) -> str | None:
+    match = re.search(r"\b(cfg\d+)\b", str(cfg_open_output or ""))
+    return match.group(1) if match else None
+
+
+def _handle_acquire_haps_lock(payload: dict) -> dict:
+    cmd = list((payload or {}).get("cmd") or [])
+    platform = str((payload or {}).get("haps_platform") or "")
+    if not cmd:
+        return {"ok": False, "error": "cmd is empty"}
+    master_fd, slave_fd = pty.openpty()
+    proc = subprocess.Popen(cmd, stdin=slave_fd, stdout=slave_fd, stderr=slave_fd)
+    os.close(slave_fd)
+    try:
+        scan = _cfgshell_eval(proc, master_fd, "cfg_scan")
+        device_id = _extract_available_device(scan, platform)
+        if not device_id:
+            raise RuntimeError("no available device from cfg_scan")
+        open_out = _cfgshell_eval(proc, master_fd, f"cfg_open {device_id}")
+        handle = _extract_cfg_handle(open_out)
+        if not handle:
+            raise RuntimeError(f"cfg_open failed: {open_out}")
+        session_id = str(uuid.uuid4())
+        _HAPS_LOCK_SESSIONS[session_id] = {
+            "proc": proc,
+            "fd": master_fd,
+            "handle": handle,
+            "device_id": device_id,
+        }
+        return {"ok": True, "session_id": session_id, "device_id": device_id, "handle": handle}
+    except Exception as exc:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+        try:
+            os.close(master_fd)
+        except Exception:
+            pass
+        return {"ok": False, "error": str(exc)}
+
+
+def _handle_release_haps_lock(payload: dict) -> dict:
+    session_id = str((payload or {}).get("session_id") or "").strip()
+    session = _HAPS_LOCK_SESSIONS.pop(session_id, None)
+    if not session:
+        return {"ok": True}
+    proc = session.get("proc")
+    fd = int(session.get("fd"))
+    handle = str(session.get("handle") or "")
+    try:
+        if handle:
+            _cfgshell_eval(proc, fd, f"cfg_close {handle}", timeout_seconds=10)
+    except Exception:
+        pass
+    try:
+        os.close(fd)
+    except Exception:
+        pass
+    try:
+        proc.terminate()
+    except Exception:
+        pass
+    return {"ok": True}
+
+
 def _handle_list_dir(payload: dict) -> dict:
     mode = str((payload or {}).get('mode') or 'file').strip() or 'file'
     raw_path = str((payload or {}).get('path') or '').strip()
@@ -261,6 +385,12 @@ while True:
         continue
     if action == 'validate_job_payload':
         _send_message(_handle_validate_job_payload(payload))
+        continue
+    if action == 'acquire_haps_lock':
+        _send_message(_handle_acquire_haps_lock(payload))
+        continue
+    if action == 'release_haps_lock':
+        _send_message(_handle_release_haps_lock(payload))
         continue
     if action == 'list_dir':
         _send_message(_handle_list_dir(payload))
