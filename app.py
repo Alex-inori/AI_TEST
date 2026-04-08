@@ -1805,17 +1805,32 @@ def get_fs_entries(request: Request, path: str = "", mode: str = "file") -> dict
     if not resolved.exists() or not resolved.is_dir():
         raise HTTPException(status_code=400, detail="path is not a directory")
 
-    entries: list[dict[str, str]] = []
-    try:
-        for entry in sorted(resolved.iterdir(), key=lambda item: (not item.is_dir(), item.name.lower())):
+    def _collect_entries(base: Path) -> list[dict[str, str]]:
+        collected: list[dict[str, str]] = []
+        for entry in sorted(base.iterdir(), key=lambda item: (not item.is_dir(), item.name.lower())):
             if entry.is_dir():
-                entries.append({"name": entry.name, "path": str(entry), "type": "directory"})
+                collected.append({"name": entry.name, "path": str(entry), "type": "directory"})
             elif mode == "file" and entry.is_file():
-                entries.append({"name": entry.name, "path": str(entry), "type": "file"})
-            if len(entries) >= 200:
+                collected.append({"name": entry.name, "path": str(entry), "type": "file"})
+            if len(collected) >= 200:
                 break
+        return collected
+
+    fallback_from = ""
+    try:
+        entries = _collect_entries(resolved)
     except PermissionError:
-        raise HTTPException(status_code=403, detail="permission denied")
+        fallback_target = resolved.parent
+        while fallback_target != fallback_target.parent:
+            try:
+                entries = _collect_entries(fallback_target)
+                fallback_from = str(resolved)
+                resolved = fallback_target
+                break
+            except PermissionError:
+                fallback_target = fallback_target.parent
+        else:
+            raise HTTPException(status_code=403, detail="permission denied")
 
     parent = str(resolved.parent) if resolved.parent != resolved else ""
     return {
@@ -1823,6 +1838,7 @@ def get_fs_entries(request: Request, path: str = "", mode: str = "file") -> dict
         "parent": parent,
         "mode": mode,
         "entries": entries,
+        "fallback_from": fallback_from,
     }
 
 
