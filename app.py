@@ -11,8 +11,6 @@ import uuid
 import time
 import shlex
 import re
-import select
-import pty
 
 try:
     import fcntl
@@ -670,82 +668,6 @@ class JobManager:
         return match.group(1) if match else ""
 
     @staticmethod
-    def _cfgshell_eval(proc: subprocess.Popen[str], io_fd: int, command: str, timeout_seconds: float = 20) -> str:
-        fd = io_fd
-
-        # Drain possible banner/help text printed when entering cfgshell.
-        for _ in range(8):
-            readable, _, _ = select.select([fd], [], [], 0.05)
-            if not readable:
-                break
-            drained = os.read(fd, 4096)
-            if not drained:
-                break
-
-        os.write(fd, f"{command}\n".encode("utf-8"))
-
-        deadline = time.monotonic() + max(1.0, timeout_seconds)
-        raw_chunks: list[str] = []
-        last_output_at = time.monotonic()
-        saw_output = False
-        while time.monotonic() < deadline:
-            if proc.poll() is not None and not saw_output:
-                raise RuntimeError("cfgshell exited unexpectedly")
-            readable, _, _ = select.select([fd], [], [], 0.2)
-            if not readable:
-                if saw_output and (time.monotonic() - last_output_at) >= 0.5:
-                    break
-                continue
-            chunk = os.read(fd, 4096)
-            if not chunk:
-                continue
-            raw_chunks.append(chunk.decode("utf-8", errors="replace"))
-            saw_output = True
-            last_output_at = time.monotonic()
-        if not saw_output:
-            raise TimeoutError(f"cfgshell command timeout: {command}")
-        raw_output = "".join(raw_chunks).strip()
-        if not raw_output:
-            raise TimeoutError(f"cfgshell command timeout: {command}")
-
-        lines = [line.strip("\r") for line in raw_output.splitlines()]
-        filtered = [line for line in lines if line.strip() and line.strip() != str(command).strip()]
-        if filtered:
-            return "\n".join(filtered).strip()
-        return raw_output
-
-    @staticmethod
-    def _extract_available_device(cfg_scan_output: str, payload: dict[str, Any]) -> str | None:
-        normalized = " ".join(str(cfg_scan_output or "").split())
-        preferred_family = JobManager._extract_platform_family(payload)
-        fallback_device: str | None = None
-        for match in re.finditer(r"DEVICE\s+(\S+).*?TYPE\s+(\S+).*?STATE\s+(\S+)", normalized):
-            device_id, device_type, state = match.groups()
-            if not state.startswith("available"):
-                continue
-            if fallback_device is None:
-                fallback_device = device_id
-            if preferred_family and preferred_family in device_type.upper():
-                return device_id
-        return fallback_device
-
-    @staticmethod
-    def _summarize_cfg_scan_states(cfg_scan_output: str) -> str:
-        normalized = " ".join(str(cfg_scan_output or "").split())
-        details: list[str] = []
-        for match in re.finditer(r"DEVICE\s+(\S+).*?TYPE\s+(\S+).*?STATE\s+(\S+)", normalized):
-            device_id, device_type, state = match.groups()
-            details.append(f"{device_id}|{device_type}|{state}")
-        if details:
-            return "; ".join(details)
-        return normalized[:300] if normalized else "empty cfg_scan output"
-
-    @staticmethod
-    def _extract_cfg_handle(cfg_open_output: str) -> str | None:
-        match = re.search(r"\b(cfg\d+)\b", str(cfg_open_output or ""))
-        return match.group(1) if match else None
-
-    @staticmethod
     def _write_process_log(log_file: Any, message: str) -> None:
         if log_file is None:
             return
@@ -780,115 +702,50 @@ class JobManager:
 
     def _acquire_device_lock(self, job_id: str, payload: dict[str, Any], cfgshell_cmd: list[str], log_file: Any) -> None:
         user_id = str(payload.get("user_id") or "").strip()
-        if user_id:
-            try:
-                task = native_task_broker.submit(
-                    user_id=user_id,
-                    action="acquire_haps_lock",
-                    payload={"cmd": cfgshell_cmd, "haps_platform": str(payload.get("haps_platform") or "")},
-                )
-                result = native_task_broker.wait(task.id, timeout_seconds=120.0)
-                if not result.get("ok"):
-                    raise RuntimeError(str(result.get("error") or "acquire_haps_lock failed"))
-                device_id = str(result.get("device_id") or "")
-                handle = str(result.get("handle") or "")
-                session_id = str(result.get("session_id") or "")
-                if not (device_id and handle and session_id):
-                    raise RuntimeError("acquire_haps_lock returned incomplete session info")
-                with self._lock:
-                    self._haps_lock_sessions[job_id] = HapsLockSession(
-                        process=None,
-                        device_id=device_id,
-                        handle=handle,
-                        io_fd=None,
-                        native_session_id=session_id,
-                    )
-                self._write_process_log(log_file, f"[HAPS_LOCK] native acquired job={job_id} device={device_id} handle={handle}")
-                return
-            except Exception as exc:
-                self._write_process_log(log_file, f"[HAPS_LOCK] native acquire failed, fallback to backend lock: {exc}")
-
-        master_fd, slave_fd = pty.openpty()
-        user_ctx = self._build_user_launch_context(payload)
-        process = subprocess.Popen(
-            [*user_ctx.prefix, *cfgshell_cmd],
-            stdin=slave_fd,
-            stdout=slave_fd,
-            stderr=slave_fd,
-            env=user_ctx.env,
-            preexec_fn=user_ctx.preexec_fn,
+        if not user_id:
+            raise RuntimeError("user_id is required for native HAPS lock")
+        task = native_task_broker.submit(
+            user_id=user_id,
+            action="acquire_haps_lock",
+            payload={"cmd": cfgshell_cmd, "haps_platform": str(payload.get("haps_platform") or "")},
         )
-        os.close(slave_fd)
-        try:
-            scan_output = self._cfgshell_eval(process, master_fd, "cfg_scan")
-            device_id = self._extract_available_device(scan_output, payload)
-            if not device_id:
-                state_info = self._summarize_cfg_scan_states(scan_output)
-                raise RuntimeError(f"no available device from cfg_scan: {state_info}")
-            open_output = self._cfgshell_eval(process, master_fd, f"cfg_open {device_id}")
-            handle = self._extract_cfg_handle(open_output)
-            if not handle:
-                raise RuntimeError(f"cfg_open failed, output={open_output!r}")
-            lock_scan_output = self._cfgshell_eval(process, master_fd, "cfg_scan")
-            self._write_process_log(log_file, f"[HAPS_LOCK] job={job_id} platform={payload.get('haps_platform')} device={device_id} handle={handle}")
-            self._write_process_log(log_file, f"[HAPS_LOCK] cfg_scan(after open): {lock_scan_output}")
-            with self._lock:
-                self._haps_lock_sessions[job_id] = HapsLockSession(process=process, device_id=device_id, handle=handle, io_fd=master_fd)
-        except Exception:
-            try:
-                process.terminate()
-                process.wait(timeout=3)
-            except Exception:
-                try:
-                    process.kill()
-                    process.wait(timeout=3)
-                except Exception:
-                    pass
-            try:
-                os.close(master_fd)
-            except Exception:
-                pass
-            raise
+        result = native_task_broker.wait(task.id, timeout_seconds=120.0)
+        if not result.get("ok"):
+            raise RuntimeError(str(result.get("error") or "acquire_haps_lock failed"))
+        device_id = str(result.get("device_id") or "")
+        handle = str(result.get("handle") or "")
+        session_id = str(result.get("session_id") or "")
+        if not (device_id and handle and session_id):
+            raise RuntimeError("acquire_haps_lock returned incomplete session info")
+        with self._lock:
+            self._haps_lock_sessions[job_id] = HapsLockSession(
+                process=None,
+                device_id=device_id,
+                handle=handle,
+                io_fd=None,
+                native_session_id=session_id,
+            )
+        self._write_process_log(log_file, f"[HAPS_LOCK] native acquired job={job_id} device={device_id} handle={handle}")
 
     def _release_haps_lock_locked(self, job_id: str, log_file: Any = None) -> None:
         session = self._haps_lock_sessions.pop(job_id, None)
         if not session:
             return
-        if session.native_session_id:
-            job = self._jobs.get(job_id)
-            user_id = str(((job.payload if job else {}) or {}).get("user_id") or "")
-            if user_id:
-                task = native_task_broker.submit(
-                    user_id=user_id,
-                    action="release_haps_lock",
-                    payload={"session_id": session.native_session_id, "handle": session.handle},
-                )
-                result = native_task_broker.wait(task.id, timeout_seconds=30.0)
-                self._write_process_log(log_file, f"[HAPS_LOCK] native released session={session.native_session_id} result={result}")
+        if not session.native_session_id:
+            self._write_process_log(log_file, f"[HAPS_LOCK] missing native session for job={job_id}")
             return
-
-        try:
-            self._cfgshell_eval(session.process, int(session.io_fd or -1), f"cfg_close {session.handle}", timeout_seconds=10)
-            self._write_process_log(log_file, f"[HAPS_LOCK] released job={job_id} handle={session.handle}")
-        except Exception as exc:
-            self._write_process_log(log_file, f"[HAPS_LOCK] release failed job={job_id}: {exc}")
-        finally:
-            try:
-                if session.io_fd is not None:
-                    os.close(session.io_fd)
-            except Exception:
-                pass
-            try:
-                if session.process is not None:
-                    session.process.terminate()
-                    session.process.wait(timeout=3)
-            except Exception:
-                try:
-                    if session.process is not None:
-                        session.process.kill()
-                        session.process.wait(timeout=3)
-                except Exception:
-                    pass
+        job = self._jobs.get(job_id)
+        user_id = str(((job.payload if job else {}) or {}).get("user_id") or "")
+        if not user_id:
+            self._write_process_log(log_file, f"[HAPS_LOCK] missing user_id for release, session={session.native_session_id}")
+            return
+        task = native_task_broker.submit(
+            user_id=user_id,
+            action="release_haps_lock",
+            payload={"session_id": session.native_session_id, "handle": session.handle},
+        )
+        result = native_task_broker.wait(task.id, timeout_seconds=30.0)
+        self._write_process_log(log_file, f"[HAPS_LOCK] native released session={session.native_session_id} result={result}")
 
     def _job_is_current_locked(self, job_id: str, run_token: int) -> bool:
         job = self._jobs.get(job_id)
