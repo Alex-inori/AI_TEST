@@ -760,6 +760,24 @@ class JobManager:
         timestamp = datetime.now().isoformat(timespec="seconds")
         JobManager._write_process_log(log_file, f"[HAPS_STAGE] stage={stage} event={event} ts={timestamp}")
 
+    def _append_failure_log_via_native(self, payload: dict[str, Any], job_id: str, reason: str) -> None:
+        user_id = str(payload.get("user_id") or "").strip()
+        log_path = str(payload.get("log_path") or "").strip()
+        if not (user_id and log_path):
+            return
+        jobs_id = str(payload.get("jobs_id") or job_id)
+        safe_jobs_id = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in jobs_id)
+        log_file = str(Path(log_path).expanduser() / f"{safe_jobs_id}.log")
+        task = native_task_broker.submit(
+            user_id=user_id,
+            action="append_log",
+            payload={
+                "log_file": log_file,
+                "line": f"[HAPS_FAIL] ts={datetime.now().isoformat(timespec='seconds')} reason={reason}",
+            },
+        )
+        native_task_broker.wait(task.id, timeout_seconds=15.0)
+
     def _acquire_device_lock(self, job_id: str, payload: dict[str, Any], cfgshell_cmd: list[str], log_file: Any) -> None:
         user_id = str(payload.get("user_id") or "").strip()
         if user_id:
@@ -938,6 +956,7 @@ class JobManager:
                 self._log_stage_timestamp(log_file, "load_db", "end")
                 if rc1 != 0:
                     self._write_process_log(log_file, f"[HAPS_LOCK] HAPS_DB load failed, exit={rc1}")
+                    self._append_failure_log_via_native(payload, job_id, f"HAPS_DB load failed (exit={rc1})")
                     with self._lock:
                         if self._job_is_current_locked(job_id, run_token):
                             self._jobs[job_id].status = "Failed"
@@ -974,6 +993,7 @@ class JobManager:
                         self._write_process_log(log_file, f"[HAPS_LOCK] SW_IMG_CHECK {sw_img_check}")
                     if rc_img != 0:
                         self._write_process_log(log_file, f"[HAPS_LOCK] SW_IMG load failed, exit={rc_img}")
+                        self._append_failure_log_via_native(payload, job_id, f"SW_IMG load failed (exit={rc_img})")
                         with self._lock:
                             if self._job_is_current_locked(job_id, run_token):
                                 self._jobs[job_id].status = "Failed"
@@ -1004,6 +1024,7 @@ class JobManager:
                 self._log_stage_timestamp(log_file, "reset", "end")
                 if rc2 != 0:
                     self._write_process_log(log_file, f"[HAPS_LOCK] HAPS_ENV reset failed, exit={rc2}")
+                    self._append_failure_log_via_native(payload, job_id, f"HAPS_ENV reset failed (exit={rc2})")
                     with self._lock:
                         if self._job_is_current_locked(job_id, run_token):
                             self._jobs[job_id].status = "Failed"
@@ -1045,6 +1066,7 @@ class JobManager:
                 threading.Thread(target=self._watch_job, args=(job.id, job.run_token), daemon=True).start()
         except Exception as exc:
             self._write_process_log(log_file, f"[HAPS_LOCK] prepare exception: {exc}")
+            self._append_failure_log_via_native(payload, job_id, f"db/reset prepare failed: {exc}")
             with self._lock:
                 if self._job_is_current_locked(job_id, run_token):
                     self._release_haps_lock_locked(job_id, log_file=log_file)
@@ -1270,6 +1292,7 @@ class JobManager:
             else:
                 current.status = "Failed"
                 current.message = f"job failed (exit={rc})"
+                self._append_failure_log_via_native(current.payload or {}, job_id, current.message)
                 self._append_utilization_log(current)
                 self._promote_waiting_locked()
 

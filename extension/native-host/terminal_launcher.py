@@ -184,6 +184,21 @@ def _handle_validate_job_payload(payload: dict) -> dict:
     return {'ok': True}
 
 
+def _handle_append_log(payload: dict) -> dict:
+    log_file = str((payload or {}).get('log_file') or '').strip()
+    line = str((payload or {}).get('line') or '').rstrip('\n')
+    if not log_file:
+        return {'ok': False, 'error': 'log_file is empty'}
+    try:
+        path = Path(log_file).expanduser()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open('a', encoding='utf-8') as handle:
+            handle.write(f"{line}\n")
+    except Exception as exc:
+        return {'ok': False, 'error': f'append_log failed: {exc}'}
+    return {'ok': True}
+
+
 def _cfgshell_eval(proc, io_fd: int, command: str, timeout_seconds: float = 20) -> str:
     for _ in range(8):
         readable, _, _ = select.select([io_fd], [], [], 0.05)
@@ -385,6 +400,9 @@ while True:
         continue
     if action == 'validate_job_payload':
         _send_message(_handle_validate_job_payload(payload))
+        continue
+    if action == 'append_log':
+        _send_message(_handle_append_log(payload))
         continue
     if action == 'acquire_haps_lock':
         _send_message(_handle_acquire_haps_lock(payload))
