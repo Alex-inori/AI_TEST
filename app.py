@@ -1787,8 +1787,19 @@ def get_directories() -> dict[str, list[str]]:
 
 
 @app.get("/api/fs")
-def get_fs_entries(path: str = "", mode: str = "file") -> dict[str, Any]:
-    target = Path(path).expanduser() if path else Path.home()
+def get_fs_entries(path: str = "", mode: str = "file", request: Request | None = None) -> dict[str, Any]:
+    viewer_user = get_system_user_id(request)
+    viewer_pwd = _username_to_passwd(viewer_user)
+    viewer_home = str(Path(viewer_pwd.pw_dir).expanduser()) if viewer_pwd is not None else str(Path.home())
+
+    raw_path = str(path or "").strip()
+    if not raw_path:
+        target = Path(viewer_home)
+    elif raw_path.startswith("~"):
+        target = Path(raw_path.replace("~", viewer_home, 1))
+    else:
+        target = Path(raw_path)
+
     try:
         resolved = target.resolve()
     except OSError:
