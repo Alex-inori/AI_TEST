@@ -109,7 +109,16 @@ def _handle_list_dir(payload: dict) -> dict:
             except PermissionError:
                 fallback_target = fallback_target.parent
         else:
-            return {'ok': False, 'error': 'permission denied'}
+            for candidate in (Path.home(), Path('/')):
+                try:
+                    entries = _collect_entries(candidate)
+                    fallback_from = str(resolved)
+                    resolved = candidate.resolve()
+                    break
+                except Exception:
+                    continue
+            else:
+                entries = []
 
     parent = str(resolved.parent) if resolved.parent != resolved else ''
     return {

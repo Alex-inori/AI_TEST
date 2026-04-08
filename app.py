@@ -1830,7 +1830,16 @@ def get_fs_entries(request: Request, path: str = "", mode: str = "file") -> dict
             except PermissionError:
                 fallback_target = fallback_target.parent
         else:
-            raise HTTPException(status_code=403, detail="permission denied")
+            for candidate in (Path.home(), APP_ROOT):
+                try:
+                    entries = _collect_entries(candidate)
+                    fallback_from = str(resolved)
+                    resolved = candidate.resolve()
+                    break
+                except Exception:
+                    continue
+            else:
+                entries = []
 
     parent = str(resolved.parent) if resolved.parent != resolved else ""
     return {
