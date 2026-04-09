@@ -23,6 +23,7 @@
 13. Recent Jobs 支持 Copy 到 New Jobs。
 14. 在 Recent Jobs 中新增与 Job 绑定的 Open UART Console；当提交 jobs 包含串口 `uart_paths` 时，后端通过 pyserial 独占打开并捕获串口输出，若端口暂时被占用会等待释放后自动重试，并通过 websocket 实时按设备（dev）分栏展示。
 15. Open Terminal、Create Jobs 本地目录浏览、Running 阶段脚本执行均通过 Chrome Extension + Native Messaging 走前端本机链路，不依赖后端执行本地命令。
+16. HAPS_DB / SW_IMG / Resetting 阶段由前端 native-host 执行；后端只保留流程控制与状态展示。
 
 ## Python 版本要求
 

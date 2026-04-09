@@ -574,7 +574,8 @@ class JobManager:
 
     def _start_job(self, payload: dict[str, Any]) -> JobRecord:
         now = datetime.now().isoformat(timespec="seconds")
-        initial_status = "Running::Loading HAPS_DB" if self._should_run_prepare(payload) else "Running::HAPS_RDY"
+        # Prepare stages are executed on frontend native-host side.
+        initial_status = "Running::HAPS_RDY"
         job = JobRecord(
             id=str(uuid.uuid4()),
             payload=payload,
@@ -845,7 +846,9 @@ class JobManager:
             lock_settings = self._read_haps_settings()
             lock_cfgshell_cmd = list(lock_settings.get("HAPS_CONFPROSH_CMD") or [])
 
-            if self._should_run_prepare(payload) and not self._frontend_cfgprosh_done(payload):
+            # Backend no longer executes HAPS_DB/SW_IMG/Reset prepare stages.
+            # These stages are migrated to frontend native-host execution.
+            if False and self._should_run_prepare(payload) and not self._frontend_cfgprosh_done(payload):
                 settings = lock_settings or self._read_haps_settings()
                 cfgshell_cmd = lock_cfgshell_cmd or list(settings.get("HAPS_CONFPROSH_CMD") or [])
                 db_load_script = str(settings.get("HAPS_DB_LOADING_TCL") or "").strip()
