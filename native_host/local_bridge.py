@@ -137,7 +137,15 @@ def _validate_job_paths(job: dict[str, Any], allowed_root: Path) -> list[str]:
     errors: list[str] = []
     job_id = str(job.get('jobs_id') or '-')
 
-    def _check_path(key: str, required: bool, suffixes: tuple[str, ...] | None = None) -> None:
+    def _check_path(
+        key: str,
+        *,
+        enabled: bool = True,
+        required: bool = False,
+        suffixes: tuple[str, ...] | None = None,
+    ) -> None:
+        if not enabled:
+            return
         raw = str(job.get(key) or '').strip()
         if required and not raw:
             errors.append(f'{job_id}: {key} is required')
@@ -154,11 +162,15 @@ def _validate_job_paths(job: dict[str, Any], allowed_root: Path) -> list[str]:
         if suffixes and p.is_file() and p.suffix.lower() not in suffixes:
             errors.append(f'{job_id}: {key} suffix invalid -> {p.suffix}')
 
-    _check_path('binfile', required=False, suffixes=('.bin', '.img'))
-    _check_path('img_file', required=bool(job.get('imgload_script_enabled')), suffixes=('.img', '.bin'))
-    _check_path('database_path', required=bool(job.get('database_path_enabled')))
-    _check_path('reset_script', required=bool(job.get('reset_script_enabled')), suffixes=('.tcl',))
-    _check_path('imgload_script', required=bool(job.get('imgload_script_enabled')), suffixes=('.tcl',))
+    database_enabled = bool(job.get('database_path_enabled'))
+    reset_enabled = bool(job.get('reset_script_enabled'))
+    imgload_enabled = bool(job.get('imgload_script_enabled'))
+
+    _check_path('binfile', enabled=True, required=False, suffixes=('.bin', '.img'))
+    _check_path('database_path', enabled=database_enabled, required=database_enabled)
+    _check_path('reset_script', enabled=reset_enabled, required=reset_enabled, suffixes=('.tcl',))
+    _check_path('imgload_script', enabled=imgload_enabled, required=imgload_enabled, suffixes=('.tcl',))
+    _check_path('img_file', enabled=imgload_enabled, required=imgload_enabled, suffixes=('.img', '.bin'))
     return errors
 
 
