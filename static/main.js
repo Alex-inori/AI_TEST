@@ -9,6 +9,7 @@ const autoFinishEnabled = document.getElementById('autoFinishEnabled');
 let currentUser = 'user';
 let currentUserId = '0';
 const promptedTimeoutConfirmJobs = new Set();
+const localCfgproshTriggeredJobs = new Set();
 let stopConfirmModal = null;
 const expandedUartJobs = new Set();
 const uartBuffers = new Map();
@@ -831,6 +832,9 @@ async function submitJobs(event) {
       return;
     }
     job.log_path = logResult.log_path || suggestedLogPath;
+    const shouldRunAfterSubmit = shouldRunLocalCfgprosh(job);
+    job.frontend_cfgprosh_done = shouldRunAfterSubmit;
+    job.local_cfgprosh_pending = shouldRunAfterSubmit;
   }
   try {
     validateJobsBeforeSubmit(jobs);
@@ -850,25 +854,6 @@ async function submitJobs(event) {
   } catch (error) {
     alert(`CreateJobs local validation failed: ${error instanceof Error ? error.message : String(error)}`);
     return;
-  }
-  for (const job of jobs) {
-    if (!shouldRunLocalCfgprosh(job)) {
-      job.frontend_cfgprosh_done = false;
-      // all db/reset/imgload toggles are disabled (or empty), skip local cfgprosh.
-      // backend keeps original behavior for non-prepare jobs.
-      continue;
-    }
-    // eslint-disable-next-line no-await-in-loop
-    const cfgResult = await getLocalBridge().runCfgprosh({
-      source: 'submit_jobs',
-      user_id: String(currentUserId || ''),
-      payload: job,
-    }).catch((error) => ({ ok: false, detail: error instanceof Error ? error.message : String(error) }));
-    if (!cfgResult.ok) {
-      alert(`Local cfgprosh failed before submit (${job.jobs_id || '-'}): ${cfgResult.detail || 'unknown error'}`);
-      return;
-    }
-    job.frontend_cfgprosh_done = true;
   }
   const response = await fetch(buildApiUrl('/api/jobs'), {
     method: 'POST',
@@ -909,10 +894,11 @@ async function openRunningJobTerminal(jobId) {
     alert(`Open Terminal failed: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
-async function runLocalStagesForJob(job) {
+async function runLocalStagesForJob(job, options = {}) {
+  const silent = !!options.silent;
   const payload = job.payload || {};
   if (!shouldRunLocalCfgprosh(payload)) {
-    alert('No local stage configured for this job.');
+    if (!silent) alert('No local stage configured for this job.');
     return;
   }
   const result = await getLocalBridge().runCfgprosh({
@@ -922,10 +908,10 @@ async function runLocalStagesForJob(job) {
     payload,
   }).catch((error) => ({ ok: false, detail: error instanceof Error ? error.message : String(error) }));
   if (!result.ok) {
-    alert(`Local cfgprosh failed: ${result.detail || 'unknown error'}`);
+    if (!silent) alert(`Local cfgprosh failed: ${result.detail || 'unknown error'}`);
     return;
   }
-  alert('Local cfgprosh execution finished.');
+  if (!silent) alert('Local cfgprosh execution finished.');
 }
 function formatWait(seconds) {
   const safe = Math.max(0, Number(seconds) || 0);
@@ -1035,6 +1021,17 @@ function renderRecentJobs(jobs) {
     actions.appendChild(iconActionRow);
     const jobUartPaths = Array.isArray(payload.uart_paths) ? payload.uart_paths : [];
     const isOwner = String(payload.user_id || '') === String(currentUserId || '');
+    const shouldRunPendingLocal = Boolean(
+      running
+      && isOwner
+      && payload.local_cfgprosh_pending
+      && shouldRunLocalCfgprosh(payload)
+      && !localCfgproshTriggeredJobs.has(String(job.id)),
+    );
+    if (shouldRunPendingLocal) {
+      localCfgproshTriggeredJobs.add(String(job.id));
+      runLocalStagesForJob(job, { silent: true });
+    }
     if (jobUartPaths.length && isOwner) {
       const uartBtn = document.createElement('button');
       const expanded = expandedUartJobs.has(String(job.id));
@@ -1139,6 +1136,9 @@ async function refreshRecentJobs() {
   const runningIds = new Set(jobs.filter((job) => isRunningStatus(job.status)).map((job) => job.id));
   Array.from(promptedTimeoutConfirmJobs).forEach((jobId) => {
     if (!runningIds.has(jobId)) promptedTimeoutConfirmJobs.delete(jobId);
+  });
+  Array.from(localCfgproshTriggeredJobs).forEach((jobId) => {
+    if (!runningIds.has(jobId)) localCfgproshTriggeredJobs.delete(jobId);
   });
   const modal = ensureStopConfirmModal();
   const currentModalJobId = modal.overlay.dataset.jobId;
