@@ -4,6 +4,7 @@
   const REQUEST_TYPE = 'HAPS_EXTENSION_REQUEST';
   const REPLY_TYPE = 'HAPS_EXTENSION_REPLY';
   const DEFAULT_TIMEOUT_MS = 20000;
+  const CFGPROSH_TIMEOUT_MS = 5 * 60 * 1000;
 
   function createRequestId() {
     return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
@@ -51,7 +52,7 @@
   }
 
   async function runCfgprosh(input) {
-    const data = await request('native_run_cfgprosh', input || {});
+    const data = await request('native_run_cfgprosh', input || {}, CFGPROSH_TIMEOUT_MS);
     return { ok: !!data.ok, detail: data.detail || '', output: data.output || '' };
   }
 
