@@ -839,6 +839,13 @@ class JobManager:
     def _frontend_cfgprosh_done(self, payload: dict[str, Any]) -> bool:
         return bool(payload.get("frontend_cfgprosh_done"))
 
+    @staticmethod
+    def _frontend_next_stage(payload: dict[str, Any]) -> str:
+        stage = str(payload.get("frontend_prepare_next") or "").strip().lower()
+        if stage in {"load_db", "load_img", "reset", "done"}:
+            return stage
+        return "load_db"
+
     def _prepare_and_launch_job(self, job_id: str, run_token: int) -> None:
         with self._lock:
             job = self._jobs.get(job_id)
@@ -853,9 +860,27 @@ class JobManager:
             lock_cfgshell_cmd = list(lock_settings.get("HAPS_CONFPROSH_CMD") or [])
 
             if self._should_run_prepare(payload) and not self._frontend_cfgprosh_done(payload):
-                # Frontend/native-host executes prepare stages in order.
-                # Backend only keeps status for flow control.
-                self._append_bg_log(job_id=job_id, stage="flow", detail="waiting frontend prepare stages")
+                # Frontend/native-host executes prepare stages one-by-one.
+                # Backend exposes the current stage through job status and waits for
+                # /frontend-stage callbacks to推进下一阶段.
+                with self._lock:
+                    if not self._job_is_current_locked(job_id, run_token):
+                        return
+                    job = self._jobs[job_id]
+                    working_payload = dict(job.payload or {})
+                    next_stage = self._frontend_next_stage(working_payload)
+                    if next_stage == "load_db":
+                        job.status = "Running::Loading HAPS_DB"
+                    elif next_stage == "load_img":
+                        job.status = "Running::Loading SW_IMG"
+                    else:
+                        job.status = "Running::Resetting HAPS_ENV"
+                    job.message = f"waiting frontend stage: {next_stage}"
+                    working_payload["frontend_prepare_next"] = next_stage
+                    working_payload["local_cfgprosh_pending"] = True
+                    job.payload = working_payload
+                self._uart_stream.notify_status(job_id, f"[backend] waiting frontend stage: {next_stage}")
+                self._append_bg_log(job_id=job_id, stage="flow", detail=f"waiting frontend stage: {next_stage}")
                 return
 
             with self._lock:
@@ -1061,30 +1086,46 @@ class JobManager:
                 job.status = "Failed"
                 job.end_time = datetime.now().isoformat(timespec="seconds")
                 job.message = detail or f"frontend stage failed: {stage}"
+                payload["local_cfgprosh_pending"] = False
+                job.payload = payload
                 self._append_bg_log(job_id=job_id, stage="failed", detail=job.message)
                 self._append_utilization_log(job)
                 self._promote_waiting_locked()
                 return job
 
             normalized_stage = str(stage or "").strip().lower()
+            expected_stage = self._frontend_next_stage(payload)
+            if expected_stage == "done":
+                job.message = detail or "frontend stage ignored: already done"
+                return job
+            if normalized_stage != expected_stage:
+                raise ValueError(f"unexpected frontend stage: got {normalized_stage or '<empty>'}, expected {expected_stage}")
+
             if normalized_stage == "load_db":
                 if self._should_run_imgload(payload):
                     job.status = "Running::Loading SW_IMG"
                     job.message = "frontend stage complete: load_db -> load_img"
+                    payload["frontend_prepare_next"] = "load_img"
                 else:
                     job.status = "Running::Resetting HAPS_ENV"
                     job.message = "frontend stage complete: load_db -> reset"
+                    payload["frontend_prepare_next"] = "reset"
+                job.payload = payload
                 return job
 
             if normalized_stage == "load_img":
                 job.status = "Running::Resetting HAPS_ENV"
                 job.message = "frontend stage complete: load_img -> reset"
+                payload["frontend_prepare_next"] = "reset"
+                job.payload = payload
                 return job
 
             if normalized_stage == "reset":
                 job.status = "Running::HAPS_RDY"
                 job.message = "frontend prepare done"
                 payload["frontend_cfgprosh_done"] = True
+                payload["frontend_prepare_next"] = "done"
+                payload["local_cfgprosh_pending"] = False
                 job.payload = payload
                 self._launch_job_process_locked(job)
                 self._append_bg_log(job_id=job_id, stage="flow", detail="frontend prepare done, launch triggered")
@@ -1744,6 +1785,8 @@ def apply_frontend_stage(job_id: str, payload: FrontendStageRequest, request: Re
         raise HTTPException(status_code=404, detail="job not found") from exc
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return manager._to_api(job)
 
 
