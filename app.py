@@ -837,18 +837,7 @@ class JobManager:
         log_file = None
         lock_acquired = False
         try:
-            log_path = str(payload.get("log_path") or "").strip()
-            lock_settings: dict[str, Any] | None = None
-            lock_cfgshell_cmd: list[str] | None = None
-            if log_path:
-                log_dir = Path(log_path).expanduser()
-                log_dir.mkdir(parents=True, exist_ok=True)
-                jobs_id = str(payload.get("jobs_id") or job_id)
-                safe_jobs_id = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in jobs_id)
-                process_log_path = log_dir / f"{safe_jobs_id}.log"
-                log_file = process_log_path.open("a", encoding="utf-8")
-
-            lock_settings = self._read_haps_settings()
+            lock_settings: dict[str, Any] | None = self._read_haps_settings()
             lock_cfgshell_cmd = list(lock_settings.get("HAPS_CONFPROSH_CMD") or [])
 
             if self._should_run_prepare(payload) and not self._frontend_cfgprosh_done(payload):
@@ -904,12 +893,6 @@ class JobManager:
                 with self._lock:
                     if not self._job_is_current_locked(job_id, run_token):
                         self._release_haps_lock_locked(job_id, log_file=log_file)
-            if log_file is not None:
-                try:
-                    log_file.flush()
-                    log_file.close()
-                except Exception:
-                    pass
 
 
     @staticmethod
