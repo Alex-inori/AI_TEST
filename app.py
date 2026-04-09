@@ -130,6 +130,18 @@ def load_terminal_path() -> str:
     return str(cfg_entries.get("TERMINAL") or "").strip()
 
 
+def load_frontend_local_defaults() -> dict[str, str]:
+    cfg_entries = _load_cfg_entries(required=False)
+    return {
+        "haps_cfgprosh": str(cfg_entries.get("HAPS_CONFPROSH") or "").strip(),
+        "haps_db_loading_tcl": str(cfg_entries.get("HAPS_DB_LOADING_TCL") or "").strip(),
+        "haps_reset_tcl": str(cfg_entries.get("HAPS_RESET_TCL") or "").strip(),
+        "haps_img_loading_tcl": str(cfg_entries.get("HAPS_IMG_LOADING_TCL") or "").strip(),
+        "terminal": str(cfg_entries.get("TERMINAL") or "").strip(),
+        "uart_log_path": str(cfg_entries.get("UART_LOG_PATH") or "").strip(),
+    }
+
+
 class OpenOcdCfgInput(BaseModel):
     tool_path: str = ""
     cfg_file: str = ""
@@ -1690,8 +1702,11 @@ def get_session(request: Request) -> dict[str, str]:
 
 
 @app.get("/api/client-config")
-def get_client_config() -> dict[str, int]:
-    return load_ui_limits()
+def get_client_config() -> dict[str, Any]:
+    return {
+        **load_ui_limits(),
+        **load_frontend_local_defaults(),
+    }
 
 
 

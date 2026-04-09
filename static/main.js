@@ -20,6 +20,12 @@ let hapsPlatforms = [];
 let uartDevices = [];
 let servicePort = 8000;
 let createJobsMaxNum = 5;
+let defaultHapsCfgprosh = '';
+let defaultDbLoadingTcl = '';
+let defaultResetTcl = '';
+let defaultImgLoadingTcl = '';
+let defaultTerminalPath = '';
+let defaultUartLogPath = '';
 
 function serviceBaseUrl() {
   return `http://127.0.0.1:${servicePort}`;
@@ -683,8 +689,8 @@ function createNewJobCard(prefill = {}, insertAfterNode = null, options = {}) {
   node.querySelector('input[name="jobs_id"]').value = options.regenerateJobsId ? makeJobsId() : (prefill.jobs_id || makeJobsId());
   applyPlatformOptions(node.querySelector('select[name="haps_platform"]'), prefill.haps_platform || '');
   node.querySelector('input[name="database_path"]').value = prefill.database_path || '';
-  node.querySelector('input[name="reset_script"]').value = prefill.reset_script || '';
-  node.querySelector('input[name="imgload_script"]').value = prefill.imgload_script || '';
+  node.querySelector('input[name="reset_script"]').value = prefill.reset_script || defaultResetTcl || '';
+  node.querySelector('input[name="imgload_script"]').value = prefill.imgload_script || defaultImgLoadingTcl || '';
   node.querySelector('input[name="binfile"]').value = prefill.binfile || '';
   node.querySelector('input[name="img_file"]').value = prefill.img_file || '';
   const openocdCfg = prefill.openocd_cfg || {};
@@ -755,6 +761,10 @@ function collectNewJobs() {
       duration_minutes: parseSelectedDurationMinutes(jobsDurationMinutes.value),
       auto_finish: autoFinishEnabled.checked,
       user_id: currentUserId,
+      cfgprosh: defaultHapsCfgprosh,
+      db_loading_tcl: defaultDbLoadingTcl,
+      terminal: defaultTerminalPath,
+      uart_log_path: defaultUartLogPath,
     };
   });
 }
@@ -808,7 +818,8 @@ async function submitJobs(event) {
   event.preventDefault();
   const jobs = collectNewJobs();
   for (const job of jobs) {
-    const suggestedLogPath = `/tmp/haps_local_logs/${String(currentUserId || '0')}/${String(job.jobs_id || 'job')}`;
+    const baseLogPath = String(defaultUartLogPath || `/tmp/haps_local_logs/${String(currentUserId || '0')}`).replace(/\/$/, '');
+    const suggestedLogPath = `${baseLogPath}/${String(job.jobs_id || 'job')}`;
     // eslint-disable-next-line no-await-in-loop
     const logResult = await getLocalBridge().prepareLogDir({
       user_id: String(currentUserId || ''),
@@ -891,6 +902,7 @@ async function openRunningJobTerminal(jobId) {
       job_id: String(jobId || ''),
       service_base_url: serviceBaseUrl(),
       user_id: String(currentUserId || ''),
+      terminal: defaultTerminalPath,
     });
     if (!result.ok) alert(`Open Terminal failed: ${result.detail || 'unknown error'}`);
   } catch (error) {
@@ -1147,6 +1159,12 @@ async function bootstrap() {
       if (Number.isFinite(parsedPort) && parsedPort > 0) servicePort = parsedPort;
       const parsedCreateMax = Number.parseInt(cfg.create_jobs_max_num, 10);
       if (Number.isFinite(parsedCreateMax) && parsedCreateMax > 0) createJobsMaxNum = parsedCreateMax;
+      defaultHapsCfgprosh = String(cfg.haps_cfgprosh || '').trim();
+      defaultDbLoadingTcl = String(cfg.haps_db_loading_tcl || '').trim();
+      defaultResetTcl = String(cfg.haps_reset_tcl || '').trim();
+      defaultImgLoadingTcl = String(cfg.haps_img_loading_tcl || '').trim();
+      defaultTerminalPath = String(cfg.terminal || '').trim();
+      defaultUartLogPath = String(cfg.uart_log_path || '').trim();
     }
   } catch (_) {}
   try {

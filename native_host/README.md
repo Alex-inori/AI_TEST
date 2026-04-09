@@ -16,6 +16,7 @@
 - `HAPS_TERMINAL`: 指定终端程序路径（可选）。
 - `HAPS_BROWSE_ROOT`: CreateJobs 可浏览根目录（默认用户 home）。
 - `HAPS_CFGPROSH`: cfgprosh 程序路径（`native_run_cfgprosh` 必需）。
+- `HAPS_DB_LOADING_TCL`: 当 payload 未传 `db_loading_tcl` 时的后备值。
 
 ## 日志
 

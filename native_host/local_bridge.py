@@ -306,9 +306,9 @@ def _handle_validate_create_jobs(payload: dict[str, Any]) -> dict[str, Any]:
 def _handle_run_cfgprosh(payload: dict[str, Any]) -> dict[str, Any]:
     job_payload = payload.get('payload') if isinstance(payload.get('payload'), dict) else {}
     log_dir = _extract_log_dir(payload)
-    cfgprosh = str(os.environ.get('HAPS_CFGPROSH', '')).strip()
+    cfgprosh = str(job_payload.get('cfgprosh') or payload.get('cfgprosh') or '').strip()
     if not cfgprosh:
-        cfgprosh = str(job_payload.get('cfgprosh') or '').strip()
+        cfgprosh = str(os.environ.get('HAPS_CFGPROSH', '')).strip()
     if not cfgprosh:
         _append_log(log_dir, "[ERROR] run_cfgprosh failed: missing cfgprosh binary")
         return {'ok': False, 'detail': 'missing cfgprosh binary (set HAPS_CFGPROSH)'}
@@ -319,12 +319,20 @@ def _handle_run_cfgprosh(payload: dict[str, Any]) -> dict[str, Any]:
     steps: list[tuple[str, list[str]]] = []
     if bool(job_payload.get('database_path_enabled')):
         db = str(job_payload.get('database_path') or '').strip()
+        db_loading_tcl = str(job_payload.get('db_loading_tcl') or payload.get('db_loading_tcl') or os.environ.get('HAPS_DB_LOADING_TCL') or '').strip()
         if db:
-            steps.append(('load_db', [cfgprosh, db]))
+            if not db_loading_tcl:
+                _append_log(log_dir, "[ERROR] run_cfgprosh failed: missing db_loading_tcl")
+                return {'ok': False, 'detail': 'missing db_loading_tcl'}
+            steps.append(('load_db', [cfgprosh, db_loading_tcl, db]))
     if bool(job_payload.get('imgload_script_enabled')):
         img = str(job_payload.get('img_file') or '').strip()
+        imgload_script = str(job_payload.get('imgload_script') or payload.get('imgload_script') or '').strip()
         if img:
-            steps.append(('load_img', [cfgprosh, img]))
+            if not imgload_script:
+                _append_log(log_dir, "[ERROR] run_cfgprosh failed: missing imgload_script")
+                return {'ok': False, 'detail': 'missing imgload_script'}
+            steps.append(('load_img', [cfgprosh, imgload_script, img]))
     if bool(job_payload.get('reset_script_enabled')):
         reset_script = str(job_payload.get('reset_script') or '').strip()
         if reset_script:

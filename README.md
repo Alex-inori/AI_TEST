@@ -139,6 +139,7 @@ pip install fastapi uvicorn pyserial
   - `native_run_cfgprosh`：执行 Running 阶段 cfgprosh；
   - `native_create_jobs_browse`：Create Jobs 浏览本地目录。
   - `native_validate_create_jobs`：Create Jobs 提交前本地合法性校验。
+- `GET /api/client-config` 除 UI 配置外，还会传递前端默认参数：`HAPS_CONFPROSH`、`HAPS_DB_LOADING_TCL`、`HAPS_RESET_TCL`、`HAPS_IMG_LOADING_TCL`、`TERMINAL`、`UART_LOG_PATH`（以小写键返回）。
 
 ### 前端调用示例（具体代码）
 
