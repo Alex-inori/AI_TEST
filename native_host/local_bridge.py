@@ -60,7 +60,34 @@ def _extract_log_dir(payload: dict[str, Any]) -> Path:
     nested_raw = str(nested.get("log_path") or "").strip()
     if nested_raw:
         return _safe_log_path(nested_raw)
+    jobs = payload.get("jobs") if isinstance(payload.get("jobs"), list) else []
+    if jobs:
+        first = jobs[0] if isinstance(jobs[0], dict) else {}
+        first_log = str((first or {}).get("log_path") or "").strip()
+        if first_log:
+            return _safe_log_path(first_log)
     return _safe_log_path(None)
+
+
+def _extract_job_log_dirs(payload: dict[str, Any]) -> list[Path]:
+    jobs = payload.get("jobs") if isinstance(payload.get("jobs"), list) else []
+    dirs: list[Path] = []
+    seen: set[str] = set()
+    for item in jobs:
+        if not isinstance(item, dict):
+            continue
+        raw = str(item.get("log_path") or "").strip()
+        if not raw:
+            continue
+        path = _safe_log_path(raw)
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        dirs.append(path)
+    if not dirs:
+        dirs.append(_extract_log_dir(payload))
+    return dirs
 
 
 def _handle_prepare_log_dir(payload: dict[str, Any]) -> dict[str, Any]:
@@ -221,10 +248,11 @@ def _validate_job_paths(job: dict[str, Any], allowed_root: Path) -> list[str]:
 
 
 def _handle_validate_create_jobs(payload: dict[str, Any]) -> dict[str, Any]:
-    log_dir = _extract_log_dir(payload)
+    log_dirs = _extract_job_log_dirs(payload)
     jobs = payload.get('jobs') if isinstance(payload.get('jobs'), list) else []
     if not jobs:
-        _append_log(log_dir, "[ERROR] validate_create_jobs failed: jobs is empty")
+        for log_dir in log_dirs:
+            _append_log(log_dir, "[ERROR] validate_create_jobs failed: jobs is empty")
         return {'ok': False, 'detail': 'jobs is empty', 'errors': ['jobs is empty']}
     allowed_root = Path(os.environ.get('HAPS_BROWSE_ROOT', str(Path.home()))).resolve()
     errors: list[str] = []
@@ -234,9 +262,12 @@ def _handle_validate_create_jobs(payload: dict[str, Any]) -> dict[str, Any]:
             continue
         errors.extend(_validate_job_paths(item, allowed_root))
     if errors:
-        _append_log(log_dir, f"[ERROR] validate_create_jobs failed: {' | '.join(errors[:10])}")
+        reason = ' | '.join(errors[:10])
+        for log_dir in log_dirs:
+            _append_log(log_dir, f"[ERROR] validate_create_jobs failed: {reason}")
         return {'ok': False, 'detail': 'validation failed', 'errors': errors[:100]}
-    _append_log(log_dir, f"[INFO] validate_create_jobs ok: jobs={len(jobs)}")
+    for log_dir in log_dirs:
+        _append_log(log_dir, f"[INFO] validate_create_jobs ok: jobs={len(jobs)}")
     return {'ok': True, 'detail': '', 'errors': []}
 
 
