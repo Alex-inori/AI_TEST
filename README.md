@@ -122,6 +122,10 @@ pip install fastapi uvicorn pyserial
 - `POST /api/jobs/{job_id}/stop`：停止运行中的 job
 - `WS /ws/uart`：UART 实时流（按 Job + 设备输出）
 
+## 后端调试日志
+
+- 后端会把关键调用流程与 `Status=Failed` 原因追加到：`/tmp/haps_bg.log`。
+
 ## cfgshell.conf 可选配置
 
 - `SERVICE_PORT`：前端请求后端服务端口。未配置时默认使用 `127.0.0.1:8000`。

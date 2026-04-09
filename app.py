@@ -35,6 +35,7 @@ from pydantic import BaseModel, Field
 APP_ROOT = Path(__file__).resolve().parent
 CFGSHELL_CONFIG_FILE = APP_ROOT / "cfgshell.conf"
 UTILIZATION_LOG_FILE = APP_ROOT / "ultization.log"
+HAPS_BG_LOG_FILE = Path("/tmp/haps_bg.log")
 DEFAULT_SERVICE_PORT = 8000
 DEFAULT_CREATE_JOBS_MAX_NUM = 5
 DEFAULT_RECENT_JOBS_MAX_NUM = 10
@@ -561,6 +562,16 @@ class JobManager:
         except Exception:
             return
 
+    @staticmethod
+    def _append_bg_log(*, job_id: str, stage: str, detail: str) -> None:
+        try:
+            ts = datetime.now().isoformat(timespec="seconds")
+            HAPS_BG_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with HAPS_BG_LOG_FILE.open("a", encoding="utf-8") as handle:
+                handle.write(f"[{ts}] [job={job_id}] [{stage}] {detail}\n")
+        except Exception:
+            return
+
     def _start_job(self, payload: dict[str, Any]) -> JobRecord:
         now = datetime.now().isoformat(timespec="seconds")
         initial_status = "Running::Loading HAPS_DB" if self._should_run_prepare(payload) else "Running::HAPS_RDY"
@@ -811,6 +822,7 @@ class JobManager:
         return bool(payload.get("frontend_cfgprosh_done"))
 
     def _prepare_and_launch_job(self, job_id: str, run_token: int) -> None:
+        self._append_bg_log(job_id=job_id, stage="prepare", detail="enter _prepare_and_launch_job")
         with self._lock:
             job = self._jobs.get(job_id)
             if not job or job.run_token != run_token:
@@ -848,6 +860,7 @@ class JobManager:
                     if not self._job_is_current_locked(job_id, run_token):
                         return
                     self._jobs[job_id].status = "Running::Loading HAPS_DB"
+                self._append_bg_log(job_id=job_id, stage="prepare", detail="status -> Running::Loading HAPS_DB")
 
                 db_load_cmd = [*cfgshell_cmd, db_load_script, database_path]
                 if "HAPS100" in haps_platform:
@@ -862,6 +875,7 @@ class JobManager:
                             self._jobs[job_id].status = "Failed"
                             self._jobs[job_id].end_time = datetime.now().isoformat(timespec="seconds")
                             self._jobs[job_id].message = f"HAPS_DB load failed (exit={rc1})"
+                            self._append_bg_log(job_id=job_id, stage="failed", detail=self._jobs[job_id].message)
                             self._append_utilization_log(self._jobs[job_id])
                             self._promote_waiting_locked()
                     return
@@ -877,6 +891,7 @@ class JobManager:
                         if not self._job_is_current_locked(job_id, run_token):
                             return
                         self._jobs[job_id].status = "Running::Loading SW_IMG"
+                    self._append_bg_log(job_id=job_id, stage="prepare", detail="status -> Running::Loading SW_IMG")
 
                     dedup_result: dict[str, str] = {}
                     dedup_error: dict[str, str] = {}
@@ -915,6 +930,7 @@ class JobManager:
                                 self._jobs[job_id].status = "Failed"
                                 self._jobs[job_id].end_time = datetime.now().isoformat(timespec="seconds")
                                 self._jobs[job_id].message = f"SW_IMG load failed (exit={rc_img})"
+                                self._append_bg_log(job_id=job_id, stage="failed", detail=self._jobs[job_id].message)
                                 self._append_utilization_log(self._jobs[job_id])
                                 self._promote_waiting_locked()
                         return
@@ -924,6 +940,7 @@ class JobManager:
                     if not self._job_is_current_locked(job_id, run_token):
                         return
                     self._jobs[job_id].status = "Running::Resetting HAPS_ENV"
+                self._append_bg_log(job_id=job_id, stage="prepare", detail="status -> Running::Resetting HAPS_ENV")
 
                 prepare_delay = self._prepare_reset_delay_seconds(ran_imgload)
                 if not self._wait_prepare_delay(job_id, run_token, prepare_delay):
@@ -939,6 +956,7 @@ class JobManager:
                             self._jobs[job_id].status = "Failed"
                             self._jobs[job_id].end_time = datetime.now().isoformat(timespec="seconds")
                             self._jobs[job_id].message = f"HAPS_ENV reset failed (exit={rc2})"
+                            self._append_bg_log(job_id=job_id, stage="failed", detail=self._jobs[job_id].message)
                             self._append_utilization_log(self._jobs[job_id])
                             self._promote_waiting_locked()
                     return
@@ -948,6 +966,7 @@ class JobManager:
                     return
                 job = self._jobs[job_id]
                 job.status = "Running::HAPS_RDY"
+            self._append_bg_log(job_id=job_id, stage="prepare", detail="status -> Running::HAPS_RDY")
 
             # cfgshell 不支持并行启动：先完成 prepare，再在 HAPS_RDY 阶段进行设备 lock。
             cfgshell_cmd_for_lock = lock_cfgshell_cmd or []
@@ -968,6 +987,7 @@ class JobManager:
                     text=True,
                 )
                 job.process = process
+                self._append_bg_log(job_id=job_id, stage="run", detail="job process started")
                 uart_paths = list((job.payload or {}).get("uart_paths") or [])
                 jobs_id = str((job.payload or {}).get("jobs_id") or job.id)
                 log_path = str((job.payload or {}).get("log_path") or "")
@@ -982,6 +1002,7 @@ class JobManager:
                     self._jobs[job_id].status = "Failed"
                     self._jobs[job_id].end_time = datetime.now().isoformat(timespec="seconds")
                     self._jobs[job_id].message = f"db/reset prepare failed: {exc}"
+                    self._append_bg_log(job_id=job_id, stage="failed", detail=self._jobs[job_id].message)
                     self._append_utilization_log(self._jobs[job_id])
                     self._promote_waiting_locked()
         finally:
@@ -1031,9 +1052,11 @@ class JobManager:
                 )
                 self._waiting_jobs[waiting.id] = waiting
                 self._waiting_order.append(waiting.id)
+                self._append_bg_log(job_id=waiting.id, stage="submit", detail="queued as waiting job")
                 return {"type": "waiting", "job": self._waiting_to_api(waiting)}
 
             job = self._start_job(payload)
+            self._append_bg_log(job_id=job.id, stage="submit", detail="accepted as running job")
             return {"type": "running", "job": self._to_api(job)}
 
     def _promote_waiting_locked(self) -> None:
@@ -1116,11 +1139,13 @@ class JobManager:
             if rc == 0:
                 current.status = "Finish"
                 current.message = "job finished"
+                self._append_bg_log(job_id=job_id, stage="finish", detail=current.message)
                 self._append_utilization_log(current)
                 self._promote_waiting_locked()
             else:
                 current.status = "Failed"
                 current.message = f"job failed (exit={rc})"
+                self._append_bg_log(job_id=job_id, stage="failed", detail=current.message)
                 self._append_utilization_log(current)
                 self._promote_waiting_locked()
 
