@@ -37,7 +37,7 @@
   - `load_db`
   - `load_img`
   - `reset`
-- `cfgprosh` 可通过 `cfgprosh` 或 `haps_cfgprosh` 字段传入（payload 顶层或嵌套 `payload` 均可）。
+- `cfgprosh` 仅通过后端下发的 `haps_cfgprosh` 字段获取（来源：后端 `cfgshell.conf` 中 `HAPS_CONFPROSH`，支持顶层或嵌套 `payload`）。
 - 阶段顺序由后端流程控制并通过前端回传接口推进。
 
 ## 安装步骤（Linux）

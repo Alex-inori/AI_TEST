@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 import os
 import hashlib
+import shlex
+import shutil
 import struct
 import subprocess
 import sys
@@ -311,21 +313,18 @@ def _handle_run_cfgprosh(payload: dict[str, Any]) -> dict[str, Any]:
     if stage_only not in {"load_db", "load_img", "reset"}:
         _append_log(log_dir, f"[ERROR] run_cfgprosh failed: invalid stage_only={stage_only!r}")
         return {'ok': False, 'detail': "stage_only must be one of: load_db, load_img, reset"}
-    cfgprosh = str(
-        job_payload.get('cfgprosh')
-        or payload.get('cfgprosh')
-        or job_payload.get('haps_cfgprosh')
-        or payload.get('haps_cfgprosh')
-        or ''
-    ).strip()
-    if not cfgprosh:
-        cfgprosh = str(os.environ.get('HAPS_CFGPROSH', '')).strip()
-    if not cfgprosh:
-        _append_log(log_dir, "[ERROR] run_cfgprosh failed: missing cfgprosh binary")
-        return {'ok': False, 'detail': 'missing cfgprosh binary (set HAPS_CFGPROSH)'}
-    if not Path(cfgprosh).exists():
-        _append_log(log_dir, f"[ERROR] run_cfgprosh failed: cfgprosh not found: {cfgprosh}")
-        return {'ok': False, 'detail': f'cfgprosh not found: {cfgprosh}'}
+    cfgprosh_raw = str(job_payload.get('haps_cfgprosh') or payload.get('haps_cfgprosh') or '').strip()
+    if not cfgprosh_raw:
+        _append_log(log_dir, "[ERROR] run_cfgprosh failed: missing haps_cfgprosh from backend")
+        return {'ok': False, 'detail': 'missing haps_cfgprosh (from backend HAPS_CONFPROSH)'}
+    cfgprosh_cmd = shlex.split(cfgprosh_raw)
+    if not cfgprosh_cmd:
+        _append_log(log_dir, f"[ERROR] run_cfgprosh failed: invalid haps_cfgprosh: {cfgprosh_raw!r}")
+        return {'ok': False, 'detail': 'invalid haps_cfgprosh command'}
+    cfgprosh_exec = cfgprosh_cmd[0]
+    if not Path(cfgprosh_exec).exists() and not shutil.which(cfgprosh_exec):
+        _append_log(log_dir, f"[ERROR] run_cfgprosh failed: cfgprosh not found: {cfgprosh_exec}")
+        return {'ok': False, 'detail': f'cfgprosh not found: {cfgprosh_exec}'}
 
     # Execute exactly one stage per call. Stage order is controlled by backend/frontend-stage API.
     if stage_only == "load_db":
@@ -338,7 +337,7 @@ def _handle_run_cfgprosh(payload: dict[str, Any]) -> dict[str, Any]:
         if not db_loading_tcl:
             _append_log(log_dir, "[ERROR] run_cfgprosh failed: missing db_loading_tcl")
             return {'ok': False, 'detail': 'missing db_loading_tcl'}
-        rc, out = _run_cmd([cfgprosh, db_loading_tcl, db])
+        rc, out = _run_cmd([*cfgprosh_cmd, db_loading_tcl, db])
         _append_log(log_dir, f"[INFO] run_cfgprosh stage=load_db rc={rc}")
         if rc != 0:
             _append_log(log_dir, f"[ERROR] run_cfgprosh failed on stage=load_db: {out[-1000:]}")
@@ -369,7 +368,7 @@ def _handle_run_cfgprosh(payload: dict[str, Any]) -> dict[str, Any]:
                 state_file.write_text(json.dumps(sorted(known), ensure_ascii=False), encoding='utf-8')
             status = 'file is remain unchanged' if duplicate else 'file is new'
             _append_log(log_dir, f"[INFO] SW_IMG_CHK algo=sha256 signature={digest} {status}: {img}")
-        rc, out = _run_cmd([cfgprosh, imgload_script, img])
+        rc, out = _run_cmd([*cfgprosh_cmd, imgload_script, img])
         _append_log(log_dir, f"[INFO] run_cfgprosh stage=load_img rc={rc}")
         if rc != 0:
             _append_log(log_dir, f"[ERROR] run_cfgprosh failed on stage=load_img: {out[-1000:]}")
@@ -382,7 +381,7 @@ def _handle_run_cfgprosh(payload: dict[str, Any]) -> dict[str, Any]:
     reset_script = str(job_payload.get('reset_script') or '').strip()
     if not reset_script:
         return {'ok': False, 'detail': 'reset_script is empty for reset'}
-    rc, out = _run_cmd([cfgprosh, reset_script])
+    rc, out = _run_cmd([*cfgprosh_cmd, reset_script])
     _append_log(log_dir, f"[INFO] run_cfgprosh stage=reset rc={rc}")
     if rc != 0:
         _append_log(log_dir, f"[ERROR] run_cfgprosh failed on stage=reset: {out[-1000:]}")
