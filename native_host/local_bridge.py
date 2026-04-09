@@ -90,6 +90,18 @@ def _extract_job_log_dirs(payload: dict[str, Any]) -> list[Path]:
     return dirs
 
 
+def _prepare_log_dirs_for_payload(payload: dict[str, Any]) -> list[Path]:
+    dirs = _extract_job_log_dirs(payload)
+    prepared: list[Path] = []
+    for log_dir in dirs:
+        result = _handle_prepare_log_dir({"log_path": str(log_dir)})
+        if result.get("ok"):
+            prepared.append(log_dir)
+        else:
+            prepared.append(log_dir)
+    return prepared
+
+
 def _handle_prepare_log_dir(payload: dict[str, Any]) -> dict[str, Any]:
     log_dir = _extract_log_dir(payload)
     try:
@@ -248,7 +260,7 @@ def _validate_job_paths(job: dict[str, Any], allowed_root: Path) -> list[str]:
 
 
 def _handle_validate_create_jobs(payload: dict[str, Any]) -> dict[str, Any]:
-    log_dirs = _extract_job_log_dirs(payload)
+    log_dirs = _prepare_log_dirs_for_payload(payload)
     jobs = payload.get('jobs') if isinstance(payload.get('jobs'), list) else []
     if not jobs:
         for log_dir in log_dirs:
