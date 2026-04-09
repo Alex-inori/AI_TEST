@@ -822,7 +822,6 @@ class JobManager:
         return bool(payload.get("frontend_cfgprosh_done"))
 
     def _prepare_and_launch_job(self, job_id: str, run_token: int) -> None:
-        self._append_bg_log(job_id=job_id, stage="prepare", detail="enter _prepare_and_launch_job")
         with self._lock:
             job = self._jobs.get(job_id)
             if not job or job.run_token != run_token:
@@ -860,7 +859,6 @@ class JobManager:
                     if not self._job_is_current_locked(job_id, run_token):
                         return
                     self._jobs[job_id].status = "Running::Loading HAPS_DB"
-                self._append_bg_log(job_id=job_id, stage="prepare", detail="status -> Running::Loading HAPS_DB")
 
                 db_load_cmd = [*cfgshell_cmd, db_load_script, database_path]
                 if "HAPS100" in haps_platform:
@@ -891,7 +889,6 @@ class JobManager:
                         if not self._job_is_current_locked(job_id, run_token):
                             return
                         self._jobs[job_id].status = "Running::Loading SW_IMG"
-                    self._append_bg_log(job_id=job_id, stage="prepare", detail="status -> Running::Loading SW_IMG")
 
                     dedup_result: dict[str, str] = {}
                     dedup_error: dict[str, str] = {}
@@ -940,7 +937,6 @@ class JobManager:
                     if not self._job_is_current_locked(job_id, run_token):
                         return
                     self._jobs[job_id].status = "Running::Resetting HAPS_ENV"
-                self._append_bg_log(job_id=job_id, stage="prepare", detail="status -> Running::Resetting HAPS_ENV")
 
                 prepare_delay = self._prepare_reset_delay_seconds(ran_imgload)
                 if not self._wait_prepare_delay(job_id, run_token, prepare_delay):
@@ -966,7 +962,6 @@ class JobManager:
                     return
                 job = self._jobs[job_id]
                 job.status = "Running::HAPS_RDY"
-            self._append_bg_log(job_id=job_id, stage="prepare", detail="status -> Running::HAPS_RDY")
 
             # cfgshell 不支持并行启动：先完成 prepare，再在 HAPS_RDY 阶段进行设备 lock。
             cfgshell_cmd_for_lock = lock_cfgshell_cmd or []
@@ -987,7 +982,6 @@ class JobManager:
                     text=True,
                 )
                 job.process = process
-                self._append_bg_log(job_id=job_id, stage="run", detail="job process started")
                 uart_paths = list((job.payload or {}).get("uart_paths") or [])
                 jobs_id = str((job.payload or {}).get("jobs_id") or job.id)
                 log_path = str((job.payload or {}).get("log_path") or "")
