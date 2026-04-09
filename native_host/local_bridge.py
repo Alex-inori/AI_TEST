@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import hashlib
 import struct
 import subprocess
 import sys
@@ -33,6 +34,45 @@ def _write_native_message(payload: dict[str, Any]) -> None:
     sys.stdout.buffer.flush()
 
 
+def _safe_log_path(raw: str | None) -> Path:
+    text = str(raw or "").strip()
+    if text:
+        return Path(text).expanduser().resolve()
+    return (Path.home() / "haps_local_logs" / "default").resolve()
+
+
+def _append_log(log_dir: Path, message: str) -> None:
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_file = log_dir / "native_host.log"
+        with log_file.open("a", encoding="utf-8") as fp:
+            fp.write(f"{message}\n")
+    except Exception:
+        # keep native-host resilient, logging failure should not break core flow.
+        pass
+
+
+def _extract_log_dir(payload: dict[str, Any]) -> Path:
+    direct_raw = str(payload.get("log_path") or "").strip()
+    if direct_raw:
+        return _safe_log_path(direct_raw)
+    nested = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
+    nested_raw = str(nested.get("log_path") or "").strip()
+    if nested_raw:
+        return _safe_log_path(nested_raw)
+    return _safe_log_path(None)
+
+
+def _handle_prepare_log_dir(payload: dict[str, Any]) -> dict[str, Any]:
+    log_dir = _extract_log_dir(payload)
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        _append_log(log_dir, f"[INFO] prepare_log_dir ok: {log_dir}")
+        return {"ok": True, "detail": "", "log_path": str(log_dir)}
+    except Exception as exc:
+        return {"ok": False, "detail": f"prepare_log_dir failed: {exc}", "log_path": str(log_dir)}
+
+
 def _resolve_terminal_binary(payload: dict[str, Any]) -> str | None:
     candidates = [
         str(payload.get('terminal') or '').strip(),
@@ -52,8 +92,10 @@ def _resolve_terminal_binary(payload: dict[str, Any]) -> str | None:
 
 
 def _handle_open_terminal(payload: dict[str, Any]) -> dict[str, Any]:
+    log_dir = _extract_log_dir(payload)
     terminal = _resolve_terminal_binary(payload)
     if not terminal:
+        _append_log(log_dir, "[ERROR] open_terminal failed: no executable terminal found")
         return {'ok': False, 'detail': 'no executable terminal found'}
 
     cwd = str(payload.get('cwd') or '').strip()
@@ -71,8 +113,10 @@ def _handle_open_terminal(payload: dict[str, Any]) -> dict[str, Any]:
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
+        _append_log(log_dir, f"[INFO] open_terminal ok: terminal={terminal} cwd={cwd}")
         return {'ok': True, 'detail': ''}
     except Exception as exc:  # pragma: no cover
+        _append_log(log_dir, f"[ERROR] open_terminal failed: {exc}")
         return {'ok': False, 'detail': f'failed to open terminal: {exc}'}
 
 
@@ -85,6 +129,7 @@ def _is_child(parent: Path, child: Path) -> bool:
 
 
 def _handle_create_jobs_browse(payload: dict[str, Any]) -> dict[str, Any]:
+    log_dir = _extract_log_dir(payload)
     requested = str(payload.get('path') or '').strip()
     mode = str(payload.get('mode') or 'file').strip().lower()
     allowed_root = Path(os.environ.get('HAPS_BROWSE_ROOT', str(Path.home()))).resolve()
@@ -107,6 +152,7 @@ def _handle_create_jobs_browse(payload: dict[str, Any]) -> dict[str, Any]:
             }
 
     if not current.exists() or not current.is_dir():
+        _append_log(log_dir, f"[ERROR] create_jobs_browse invalid path: {current}")
         return {'ok': False, 'detail': f'invalid path: {current}'}
 
     entries: list[dict[str, str]] = []
@@ -175,8 +221,10 @@ def _validate_job_paths(job: dict[str, Any], allowed_root: Path) -> list[str]:
 
 
 def _handle_validate_create_jobs(payload: dict[str, Any]) -> dict[str, Any]:
+    log_dir = _extract_log_dir(payload)
     jobs = payload.get('jobs') if isinstance(payload.get('jobs'), list) else []
     if not jobs:
+        _append_log(log_dir, "[ERROR] validate_create_jobs failed: jobs is empty")
         return {'ok': False, 'detail': 'jobs is empty', 'errors': ['jobs is empty']}
     allowed_root = Path(os.environ.get('HAPS_BROWSE_ROOT', str(Path.home()))).resolve()
     errors: list[str] = []
@@ -186,18 +234,23 @@ def _handle_validate_create_jobs(payload: dict[str, Any]) -> dict[str, Any]:
             continue
         errors.extend(_validate_job_paths(item, allowed_root))
     if errors:
+        _append_log(log_dir, f"[ERROR] validate_create_jobs failed: {' | '.join(errors[:10])}")
         return {'ok': False, 'detail': 'validation failed', 'errors': errors[:100]}
+    _append_log(log_dir, f"[INFO] validate_create_jobs ok: jobs={len(jobs)}")
     return {'ok': True, 'detail': '', 'errors': []}
 
 
 def _handle_run_cfgprosh(payload: dict[str, Any]) -> dict[str, Any]:
     job_payload = payload.get('payload') if isinstance(payload.get('payload'), dict) else {}
+    log_dir = _extract_log_dir(payload)
     cfgprosh = str(os.environ.get('HAPS_CFGPROSH', '')).strip()
     if not cfgprosh:
         cfgprosh = str(job_payload.get('cfgprosh') or '').strip()
     if not cfgprosh:
+        _append_log(log_dir, "[ERROR] run_cfgprosh failed: missing cfgprosh binary")
         return {'ok': False, 'detail': 'missing cfgprosh binary (set HAPS_CFGPROSH)'}
     if not Path(cfgprosh).exists():
+        _append_log(log_dir, f"[ERROR] run_cfgprosh failed: cfgprosh not found: {cfgprosh}")
         return {'ok': False, 'detail': f'cfgprosh not found: {cfgprosh}'}
 
     steps: list[tuple[str, list[str]]] = []
@@ -215,19 +268,41 @@ def _handle_run_cfgprosh(payload: dict[str, Any]) -> dict[str, Any]:
             steps.append(('reset_env', [cfgprosh, reset_script]))
 
     if not steps:
+        _append_log(log_dir, "[ERROR] run_cfgprosh failed: no executable step")
         return {'ok': False, 'detail': 'no executable cfgprosh step from payload'}
+
+    # SW_IMG_CHK moved from backend to native-host
+    if bool(job_payload.get('imgload_script_enabled')):
+        img_file = str(job_payload.get('img_file') or '').strip()
+        if img_file and Path(img_file).exists():
+            digest = hashlib.sha256(Path(img_file).read_bytes()).hexdigest()
+            state_file = (Path.home() / '.haps_local_bridge' / 'sw_img_signatures.json').resolve()
+            state_file.parent.mkdir(parents=True, exist_ok=True)
+            if state_file.exists():
+                known = set(json.loads(state_file.read_text(encoding='utf-8')))
+            else:
+                known = set()
+            duplicate = digest in known
+            if not duplicate:
+                known.add(digest)
+                state_file.write_text(json.dumps(sorted(known), ensure_ascii=False), encoding='utf-8')
+            status = 'file is remain unchanged' if duplicate else 'file is new'
+            _append_log(log_dir, f"[INFO] SW_IMG_CHK algo=sha256 signature={digest} {status}: {img_file}")
 
     merged_output: list[str] = []
     for stage, cmd in steps:
         rc, out = _run_cmd(cmd)
         merged_output.append(f'[{stage}] rc={rc}\n{out}')
+        _append_log(log_dir, f"[INFO] run_cfgprosh stage={stage} rc={rc}")
         if rc != 0:
+            _append_log(log_dir, f"[ERROR] run_cfgprosh failed on stage={stage}: {out[-1000:]}")
             return {
                 'ok': False,
                 'detail': f'cfgprosh step failed: {stage}',
                 'output': '\n'.join(merged_output)[-4000:],
             }
 
+    _append_log(log_dir, f"[INFO] run_cfgprosh ok: steps={len(steps)}")
     return {'ok': True, 'detail': '', 'output': '\n'.join(merged_output)[-4000:]}
 
 
@@ -236,6 +311,8 @@ def _dispatch(action: str, payload: dict[str, Any]) -> dict[str, Any]:
         return {'ok': True, 'detail': ''}
     if action == 'native_open_terminal':
         return _handle_open_terminal(payload)
+    if action == 'native_prepare_log_dir':
+        return _handle_prepare_log_dir(payload)
     if action == 'native_create_jobs_browse':
         return _handle_create_jobs_browse(payload)
     if action == 'native_run_cfgprosh':

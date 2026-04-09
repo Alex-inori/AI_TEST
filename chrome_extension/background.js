@@ -1,6 +1,7 @@
 const NATIVE_HOST = 'com.haps.local_bridge';
 const ALLOWED_ACTIONS = new Set([
   'native_open_terminal',
+  'native_prepare_log_dir',
   'native_run_cfgprosh',
   'native_create_jobs_browse',
   'native_validate_create_jobs',

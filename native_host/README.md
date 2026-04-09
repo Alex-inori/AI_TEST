@@ -5,6 +5,7 @@
 ## 已实现 API
 
 - `native_open_terminal`
+- `native_prepare_log_dir`
 - `native_create_jobs_browse`
 - `native_run_cfgprosh`
 - `native_validate_create_jobs`
@@ -15,6 +16,12 @@
 - `HAPS_TERMINAL`: 指定终端程序路径（可选）。
 - `HAPS_BROWSE_ROOT`: CreateJobs 可浏览根目录（默认用户 home）。
 - `HAPS_CFGPROSH`: cfgprosh 程序路径（`native_run_cfgprosh` 必需）。
+
+## 日志
+
+- native-host 会把关键执行日志与错误原因落盘到 `<log_path>/native_host.log`。
+- `log_path` 由前端在提交前调用 `native_prepare_log_dir` 创建并传入后续 action。
+- `SW_IMG_CHK` 在 native-host 执行，摘要缓存位于 `~/.haps_local_bridge/sw_img_signatures.json`。
 
 ## 安装步骤（Linux）
 

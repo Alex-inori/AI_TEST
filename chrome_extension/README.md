@@ -5,6 +5,7 @@
 ## 支持动作
 
 - `native_open_terminal`：由 Native Host 打开本地终端。
+- `native_prepare_log_dir`：由 Native Host 创建前端用户日志目录。
 - `native_run_cfgprosh`：由 Native Host 负责执行 cfgprosh（阶段编排在 host 中处理）。
 - `native_create_jobs_browse`：CreateJobs 文件/目录浏览（由 Native Host 返回条目）。
 - `native_validate_create_jobs`：CreateJobs 本地合法性校验（路径存在性/后缀等）。

@@ -59,6 +59,10 @@
     const data = await request('native_validate_create_jobs', input || {});
     return { ok: !!data.ok, detail: data.detail || '', errors: data.errors || [] };
   }
+  async function prepareLogDir(input) {
+    const data = await request('native_prepare_log_dir', input || {});
+    return { ok: !!data.ok, detail: data.detail || '', log_path: data.log_path || '' };
+  }
 
   async function ping() {
     const data = await request('ping', { ts: new Date().toISOString() }, 5000);
@@ -71,6 +75,7 @@
     createJobsBrowse,
     runCfgprosh,
     validateCreateJobs,
+    prepareLogDir,
     ping,
   };
 }(window));

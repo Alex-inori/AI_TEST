@@ -807,6 +807,20 @@ function shouldRunLocalCfgprosh(payload = {}) {
 async function submitJobs(event) {
   event.preventDefault();
   const jobs = collectNewJobs();
+  for (const job of jobs) {
+    const suggestedLogPath = `/tmp/haps_local_logs/${String(currentUserId || '0')}/${String(job.jobs_id || 'job')}`;
+    // eslint-disable-next-line no-await-in-loop
+    const logResult = await getLocalBridge().prepareLogDir({
+      user_id: String(currentUserId || ''),
+      jobs_id: String(job.jobs_id || ''),
+      log_path: suggestedLogPath,
+    }).catch((error) => ({ ok: false, detail: error instanceof Error ? error.message : String(error) }));
+    if (!logResult.ok) {
+      alert(`Prepare local log folder failed (${job.jobs_id || '-'}): ${logResult.detail || 'unknown error'}`);
+      return;
+    }
+    job.log_path = logResult.log_path || suggestedLogPath;
+  }
   try {
     validateJobsBeforeSubmit(jobs);
   } catch (err) {

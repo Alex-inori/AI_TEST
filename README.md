@@ -135,6 +135,7 @@ pip install fastapi uvicorn pyserial
 - Native Host 的 Python 实现位于 `native_host/local_bridge.py`，并附带 manifest 模板 `native_host/com.haps.local_bridge.json`。
 - 前端当前使用的本机动作（具体执行逻辑在 Native Host）：
   - `native_open_terminal`：打开本地 Terminal；
+  - `native_prepare_log_dir`：创建前端用户日志目录；
   - `native_run_cfgprosh`：执行 Running 阶段 cfgprosh；
   - `native_create_jobs_browse`：Create Jobs 浏览本地目录。
   - `native_validate_create_jobs`：Create Jobs 提交前本地合法性校验。
@@ -150,9 +151,15 @@ await window.HapsLocalBridge.openFrontendTerminal({
 });
 
 // 2) 执行 cfgprosh（阶段编排由 native-host 完成）
+const logInit = await window.HapsLocalBridge.prepareLogDir({
+  user_id: '1001',
+  jobs_id: 'job-001',
+  log_path: '/tmp/haps_local_logs/1001/job-001',
+});
 await window.HapsLocalBridge.runCfgprosh({
   source: 'running_job',
   job_id: 'job-001',
+  log_path: logInit.log_path,
   payload: {/* 整个 job payload */},
   user_id: '1001',
 });
