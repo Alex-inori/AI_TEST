@@ -776,7 +776,7 @@ function collectNewJobs() {
       duration_minutes: parseSelectedDurationMinutes(jobsDurationMinutes.value),
       auto_finish: autoFinishEnabled.checked,
       user_id: currentUserId,
-      cfgprosh: defaultHapsCfgprosh,
+      haps_cfgprosh: defaultHapsCfgprosh,
       db_loading_tcl: defaultDbLoadingTcl,
       terminal: defaultTerminalPath,
       uart_log_path: defaultUartLogPath,
