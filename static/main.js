@@ -797,6 +797,13 @@ function validateJobsBeforeSubmit(jobs) {
     throw new Error(`Duplicate UART path detected: ${Array.from(duplicateUarts).join(', ')}`);
   }
 }
+function shouldRunLocalCfgprosh(payload = {}) {
+  return Boolean(
+    (payload.database_path_enabled && String(payload.database_path || '').trim())
+    || (payload.imgload_script_enabled && String(payload.img_file || '').trim())
+    || (payload.reset_script_enabled && String(payload.reset_script || '').trim()),
+  );
+}
 async function submitJobs(event) {
   event.preventDefault();
   const jobs = collectNewJobs();
@@ -820,6 +827,12 @@ async function submitJobs(event) {
     return;
   }
   for (const job of jobs) {
+    if (!shouldRunLocalCfgprosh(job)) {
+      job.frontend_cfgprosh_done = false;
+      // all db/reset/imgload toggles are disabled (or empty), skip local cfgprosh.
+      // backend keeps original behavior for non-prepare jobs.
+      continue;
+    }
     // eslint-disable-next-line no-await-in-loop
     const cfgResult = await getLocalBridge().runCfgprosh({
       source: 'submit_jobs',
@@ -872,12 +885,7 @@ async function openRunningJobTerminal(jobId) {
 }
 async function runLocalStagesForJob(job) {
   const payload = job.payload || {};
-  const hasAnyCfgproshStage = (
-    (payload.database_path_enabled && String(payload.database_path || '').trim())
-    || (payload.imgload_script_enabled && String(payload.img_file || '').trim())
-    || (payload.reset_script_enabled && String(payload.reset_script || '').trim())
-  );
-  if (!hasAnyCfgproshStage) {
+  if (!shouldRunLocalCfgprosh(payload)) {
     alert('No local stage configured for this job.');
     return;
   }
