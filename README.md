@@ -22,6 +22,7 @@
 12. Recent Jobs 记录提交时间与结束时间。
 13. Recent Jobs 支持 Copy 到 New Jobs。
 14. 在 Recent Jobs 中新增与 Job 绑定的 Open UART Console；当提交 jobs 包含串口 `uart_paths` 时，后端通过 pyserial 独占打开并捕获串口输出，若端口暂时被占用会等待释放后自动重试，并通过 websocket 实时按设备（dev）分栏展示。
+15. Open Terminal、Create Jobs 本地目录浏览、Running 阶段脚本执行均通过 Chrome Extension + Native Messaging 走前端本机链路，不依赖后端执行本地命令。
 
 ## Python 版本要求
 
@@ -126,3 +127,49 @@ pip install fastapi uvicorn pyserial
 - `SERVICE_PORT`：前端请求后端服务端口。未配置时默认使用 `127.0.0.1:8000`。
 - `CREATE_JOBS_MAX_NUM`：New Jobs 页面允许创建/提交的最大 Job 数量。未配置时默认 `5`。
 - `RECENT_JOBS_MAX_NUM`：Recent Jobs 最多保留显示条数。未配置时默认 `10`。
+
+## Chrome Extension 本地桥接
+
+- 扩展代码位于 `chrome_extension/`（`manifest.json`、`content-script.js`、`background.js`）。
+- 前端页面通过 `window.postMessage` 请求扩展，扩展再通过 `chrome.runtime.sendNativeMessage` 调用本机 Host：`com.haps.local_bridge`。
+- Native Host 的 Python 实现位于 `native_host/local_bridge.py`，并附带 manifest 模板 `native_host/com.haps.local_bridge.json`。
+- 前端当前使用的本机动作（具体执行逻辑在 Native Host）：
+  - `native_open_terminal`：打开本地 Terminal；
+  - `native_run_cfgprosh`：执行 Running 阶段 cfgprosh；
+  - `native_create_jobs_browse`：Create Jobs 浏览本地目录。
+  - `native_validate_create_jobs`：Create Jobs 提交前本地合法性校验。
+
+### 前端调用示例（具体代码）
+
+```js
+// 1) 打开本地终端
+await window.HapsLocalBridge.openFrontendTerminal({
+  job_id: 'job-001',
+  service_base_url: 'http://127.0.0.1:8000',
+  user_id: '1001',
+});
+
+// 2) 执行 cfgprosh（阶段编排由 native-host 完成）
+await window.HapsLocalBridge.runCfgprosh({
+  source: 'running_job',
+  job_id: 'job-001',
+  payload: {/* 整个 job payload */},
+  user_id: '1001',
+});
+
+// 3) Create Jobs 浏览本地目录
+const fsData = await window.HapsLocalBridge.createJobsBrowse({
+  source: 'create_jobs',
+  path: '/home/user',
+  mode: 'file',
+  user_id: '1001',
+});
+console.log(fsData.entries);
+
+// 4) Create Jobs 提交前校验
+const validate = await window.HapsLocalBridge.validateCreateJobs({
+  user_id: '1001',
+  jobs: [/* collectNewJobs() 结果 */],
+});
+if (!validate.ok) console.error(validate.errors);
+```

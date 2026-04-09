@@ -795,6 +795,9 @@ class JobManager:
             return self.PREPARE_RESET_DELAY_AFTER_IMG_SECONDS
         return self.PREPARE_RESET_DELAY_NO_IMG_SECONDS
 
+    def _frontend_cfgprosh_done(self, payload: dict[str, Any]) -> bool:
+        return bool(payload.get("frontend_cfgprosh_done"))
+
     def _prepare_and_launch_job(self, job_id: str, run_token: int) -> None:
         with self._lock:
             job = self._jobs.get(job_id)
@@ -819,7 +822,7 @@ class JobManager:
             lock_settings = self._read_haps_settings()
             lock_cfgshell_cmd = list(lock_settings.get("HAPS_CONFPROSH_CMD") or [])
 
-            if self._should_run_prepare(payload):
+            if self._should_run_prepare(payload) and not self._frontend_cfgprosh_done(payload):
                 settings = lock_settings or self._read_haps_settings()
                 cfgshell_cmd = lock_cfgshell_cmd or list(settings.get("HAPS_CONFPROSH_CMD") or [])
                 db_load_script = str(settings.get("HAPS_DB_LOADING_TCL") or "").strip()
@@ -1828,42 +1831,10 @@ def stop_job(job_id: str) -> dict[str, Any]:
 
 @app.post("/api/jobs/{job_id}/open-terminal")
 def open_job_terminal(job_id: str, request: Request) -> dict[str, Any]:
-    viewer_user_id = get_system_user_id(request)
-    all_jobs = manager.list_jobs(viewer_user_id=viewer_user_id)
-    target = next((job for job in all_jobs if str(job.get("id")) == str(job_id)), None)
-    if target is None:
-        raise HTTPException(status_code=404, detail="job not found")
-    payload = target.get("payload") or {}
-    if str(payload.get("user_id") or "") != str(viewer_user_id):
-        raise HTTPException(status_code=403, detail="only owner can open terminal")
-    if not manager._is_running_status(str(target.get("status") or "")):
-        raise HTTPException(status_code=400, detail="terminal can only be opened for running jobs")
-
-    terminal_path = load_terminal_path()
-    if not terminal_path:
-        raise HTTPException(status_code=400, detail="missing TERMINAL in cfgshell.conf")
-    if not Path(terminal_path).exists():
-        raise HTTPException(status_code=400, detail=f"terminal path not found: {terminal_path}")
-    if not os.access(terminal_path, os.X_OK):
-        raise HTTPException(status_code=400, detail=f"terminal path is not executable: {terminal_path}")
-
-    launch_cwd = str(payload.get("log_path") or "").strip() or str(Path.home())
-    if not Path(launch_cwd).exists():
-        launch_cwd = str(Path.home())
-
-    try:
-        subprocess.Popen(  # noqa: S603
-            [terminal_path],  # noqa: S607
-            cwd=launch_cwd,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"failed to open terminal: {exc}") from exc
-
-    return {"ok": True}
+    raise HTTPException(
+        status_code=410,
+        detail="open-terminal was moved to frontend native-host implementation; use Chrome extension bridge",
+    )
 
 
 @app.post("/api/jobs/{job_id}/confirm-stop")

@@ -531,14 +531,22 @@ async function loadFsEntriesWithFallback(path, mode) {
     return loadFsEntries(fallbackPath, mode);
   }
 }
+function getLocalBridge() {
+  const bridge = window.HapsLocalBridge;
+  if (!bridge) throw new Error('Chrome extension bridge is not available.');
+  return bridge;
+}
 async function loadFsEntries(path, mode) {
-  const url = buildApiUrl(`/api/fs?path=${encodeURIComponent(path || '')}&mode=${encodeURIComponent(mode)}`);
-  const response = await fetch(url);
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(text || 'load failed');
+  try {
+    return await getLocalBridge().createJobsBrowse({
+      path: String(path || ''),
+      mode: String(mode || 'file'),
+      source: 'create_jobs',
+      user_id: String(currentUserId || ''),
+    });
+  } catch (error) {
+    throw new Error(error instanceof Error ? error.message : String(error));
   }
-  return response.json();
 }
 async function browseViaFileSystem(target, mode = 'file') {
   const modal = ensureFileBrowserModal();
@@ -798,6 +806,32 @@ async function submitJobs(event) {
     alert(err instanceof Error ? err.message : String(err));
     return;
   }
+  try {
+    const localValidation = await getLocalBridge().validateCreateJobs({ jobs, user_id: String(currentUserId || '') });
+    if (!localValidation.ok) {
+      const detail = localValidation.errors && localValidation.errors.length
+        ? localValidation.errors.join('\n')
+        : (localValidation.detail || 'native validation failed');
+      alert(`CreateJobs local validation failed:\n${detail}`);
+      return;
+    }
+  } catch (error) {
+    alert(`CreateJobs local validation failed: ${error instanceof Error ? error.message : String(error)}`);
+    return;
+  }
+  for (const job of jobs) {
+    // eslint-disable-next-line no-await-in-loop
+    const cfgResult = await getLocalBridge().runCfgprosh({
+      source: 'submit_jobs',
+      user_id: String(currentUserId || ''),
+      payload: job,
+    }).catch((error) => ({ ok: false, detail: error instanceof Error ? error.message : String(error) }));
+    if (!cfgResult.ok) {
+      alert(`Local cfgprosh failed before submit (${job.jobs_id || '-'}): ${cfgResult.detail || 'unknown error'}`);
+      return;
+    }
+    job.frontend_cfgprosh_done = true;
+  }
   const response = await fetch(buildApiUrl('/api/jobs'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -825,13 +859,39 @@ async function stopAndResubmitJob(jobId) {
   refreshWaitingJobs();
 }
 async function openRunningJobTerminal(jobId) {
-  const response = await fetch(buildApiUrl(`/api/jobs/${jobId}/open-terminal`), { method: 'POST' });
-  if (!response.ok) {
-    try {
-      const detail = await response.text();
-      alert(`Open Terminal failed: ${detail}`);
-    } catch (_) {}
+  try {
+    const result = await getLocalBridge().openFrontendTerminal({
+      job_id: String(jobId || ''),
+      service_base_url: serviceBaseUrl(),
+      user_id: String(currentUserId || ''),
+    });
+    if (!result.ok) alert(`Open Terminal failed: ${result.detail || 'unknown error'}`);
+  } catch (error) {
+    alert(`Open Terminal failed: ${error instanceof Error ? error.message : String(error)}`);
   }
+}
+async function runLocalStagesForJob(job) {
+  const payload = job.payload || {};
+  const hasAnyCfgproshStage = (
+    (payload.database_path_enabled && String(payload.database_path || '').trim())
+    || (payload.imgload_script_enabled && String(payload.img_file || '').trim())
+    || (payload.reset_script_enabled && String(payload.reset_script || '').trim())
+  );
+  if (!hasAnyCfgproshStage) {
+    alert('No local stage configured for this job.');
+    return;
+  }
+  const result = await getLocalBridge().runCfgprosh({
+    source: 'running_job',
+    job_id: String(job.id || ''),
+    user_id: String(currentUserId || ''),
+    payload,
+  }).catch((error) => ({ ok: false, detail: error instanceof Error ? error.message : String(error) }));
+  if (!result.ok) {
+    alert(`Local cfgprosh failed: ${result.detail || 'unknown error'}`);
+    return;
+  }
+  alert('Local cfgprosh execution finished.');
 }
 function formatWait(seconds) {
   const safe = Math.max(0, Number(seconds) || 0);
@@ -976,6 +1036,13 @@ function renderRecentJobs(jobs) {
           </svg>`;
         terminalBtn.addEventListener('click', () => openRunningJobTerminal(job.id));
         iconActionRow.appendChild(terminalBtn);
+        const localStageBtn = document.createElement('button');
+        localStageBtn.textContent = 'Run Local';
+        localStageBtn.className = 'copy-btn';
+        localStageBtn.type = 'button';
+        localStageBtn.style.width = '100%';
+        localStageBtn.addEventListener('click', () => runLocalStagesForJob(job));
+        actions.appendChild(localStageBtn);
         const stopAndResubmitBtn = document.createElement('button');
         stopAndResubmitBtn.className = 'copy-btn stop-resubmit-icon-btn icon-only-btn';
         stopAndResubmitBtn.type = 'button';

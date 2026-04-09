@@ -1,0 +1,9 @@
+{
+  "name": "com.haps.local_bridge",
+  "description": "HAPS Local Native Messaging Bridge",
+  "path": "/absolute/path/to/native_host/local_bridge.py",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://<your-extension-id>/"
+  ]
+}
