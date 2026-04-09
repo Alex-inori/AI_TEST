@@ -355,6 +355,15 @@ class UartStreamManager:
             self._buffers[job_id][device].append(message)
         self._broadcast(message)
 
+    def notify_status(self, job_id: str, line: str) -> None:
+        self._append_and_broadcast({
+            "type": "status",
+            "job_id": str(job_id or ""),
+            "device": "backend",
+            "line": str(line or ""),
+            "ts": datetime.now().isoformat(timespec="seconds"),
+        })
+
     def write_input(self, job_id: str, device: str, content: str, append_newline: bool = False) -> tuple[bool, str]:
         key = (str(job_id), str(device))
         with self._lock:
@@ -743,6 +752,7 @@ class JobManager:
         return algo, signature
 
     def _acquire_device_lock(self, job_id: str, payload: dict[str, Any], cfgshell_cmd: list[str], log_file: Any) -> None:
+        self._uart_stream.notify_status(job_id, "[backend] acquire device lock begin")
         master_fd, slave_fd = pty.openpty()
         process = subprocess.Popen(
             cfgshell_cmd,
@@ -764,9 +774,11 @@ class JobManager:
             lock_scan_output = self._cfgshell_eval(process, master_fd, "cfg_scan")
             self._write_process_log(log_file, f"[HAPS_LOCK] job={job_id} platform={payload.get('haps_platform')} device={device_id} handle={handle}")
             self._write_process_log(log_file, f"[HAPS_LOCK] cfg_scan(after open): {lock_scan_output}")
+            self._uart_stream.notify_status(job_id, f"[backend] lock acquired device={device_id} handle={handle}")
             with self._lock:
                 self._haps_lock_sessions[job_id] = HapsLockSession(process=process, device_id=device_id, handle=handle, io_fd=master_fd)
-        except Exception:
+        except Exception as exc:
+            self._uart_stream.notify_status(job_id, f"[backend] acquire device lock failed: {exc}")
             try:
                 process.terminate()
                 process.wait(timeout=3)

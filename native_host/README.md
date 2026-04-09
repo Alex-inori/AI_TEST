@@ -22,6 +22,7 @@
 
 - native-host 会把关键执行日志与错误原因落盘到 `<log_path>/native_host.log`。
 - `log_path` 由前端在提交前调用 `native_prepare_log_dir` 创建并传入后续 action。
+- `native_prepare_log_dir` 会将目录权限设置为 `0777`，确保后端串口抓取流程也可写入同目录。
 - `SW_IMG_CHK` 在 native-host 执行，摘要缓存位于 `~/.haps_local_bridge/sw_img_signatures.json`。
 
 ## CreateJobs 校验规则（native_validate_create_jobs）

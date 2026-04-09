@@ -9,6 +9,7 @@
 - `native_run_cfgprosh`：由 Native Host 负责执行 cfgprosh（阶段编排在 host 中处理）。
 - `native_create_jobs_browse`：CreateJobs 文件/目录浏览（由 Native Host 返回条目）。
 - `native_validate_create_jobs`：CreateJobs 本地合法性校验（路径存在性/后缀等）。
+- `native_append_log`：前端把后端通知到的状态日志落盘到本地日志目录。
 
 ## 消息链路
 

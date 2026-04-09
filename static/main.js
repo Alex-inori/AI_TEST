@@ -12,6 +12,7 @@ const promptedTimeoutConfirmJobs = new Set();
 const localCfgproshTriggeredStages = new Set();
 let stopConfirmModal = null;
 const expandedUartJobs = new Set();
+const jobLogPathById = new Map();
 const uartBuffers = new Map();
 const uartLastLineSeen = new Map();
 let uartSocket = null;
@@ -151,6 +152,16 @@ function appendUartLine(jobId, device, line, ts) {
   list.push(`[${ts}] ${line}`);
   if (list.length > 500) list.shift();
 }
+async function mirrorBackendStatusToNativeLog(jobId, line, ts) {
+  const logPath = String(jobLogPathById.get(String(jobId || '')) || '').trim();
+  if (!logPath) return;
+  try {
+    await getLocalBridge().appendLog({
+      log_path: logPath,
+      line: `[${ts || new Date().toISOString()}] ${line || ''}`,
+    });
+  } catch (_) {}
+}
 function consumeUartSnapshot(jobs) {
   Object.entries(jobs || {}).forEach(([jobId, byDevice]) => {
     if (!uartBuffers.has(jobId)) uartBuffers.set(jobId, new Map());
@@ -188,6 +199,9 @@ function connectUartSocket() {
       }
       if (msg.type !== 'line' && msg.type !== 'status') return;
       appendUartLine(msg.job_id || '', msg.device || 'unknown', msg.line || '', msg.ts || '');
+      if (msg.type === 'status' && msg.device === 'backend') {
+        mirrorBackendStatusToNativeLog(msg.job_id || '', msg.line || '', msg.ts || '');
+      }
       const jobCard = findRecentJobCard(msg.job_id || '');
       if (!jobCard || !expandedUartJobs.has(String(msg.job_id || ''))) return;
       const panel = jobCard.querySelector('.uart-job-console');
@@ -1152,6 +1166,11 @@ async function refreshRecentJobs() {
   if (!response.ok) return;
   const data = await response.json();
   const jobs = data.jobs || [];
+  jobLogPathById.clear();
+  jobs.forEach((job) => {
+    const payload = job.payload || {};
+    if (job && job.id) jobLogPathById.set(String(job.id), String(payload.log_path || ''));
+  });
   const runningIds = new Set(jobs.filter((job) => isRunningStatus(job.status)).map((job) => job.id));
   Array.from(promptedTimeoutConfirmJobs).forEach((jobId) => {
     if (!runningIds.has(jobId)) promptedTimeoutConfirmJobs.delete(jobId);

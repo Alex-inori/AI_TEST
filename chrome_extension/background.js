@@ -5,6 +5,7 @@ const ALLOWED_ACTIONS = new Set([
   'native_run_cfgprosh',
   'native_create_jobs_browse',
   'native_validate_create_jobs',
+  'native_append_log',
   'ping',
 ]);
 

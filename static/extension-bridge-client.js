@@ -63,6 +63,10 @@
     const data = await request('native_prepare_log_dir', input || {});
     return { ok: !!data.ok, detail: data.detail || '', log_path: data.log_path || '' };
   }
+  async function appendLog(input) {
+    const data = await request('native_append_log', input || {});
+    return { ok: !!data.ok, detail: data.detail || '' };
+  }
 
   async function ping() {
     const data = await request('ping', { ts: new Date().toISOString() }, 5000);
@@ -76,6 +80,7 @@
     runCfgprosh,
     validateCreateJobs,
     prepareLogDir,
+    appendLog,
     ping,
   };
 }(window));

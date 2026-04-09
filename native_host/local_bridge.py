@@ -106,6 +106,7 @@ def _handle_prepare_log_dir(payload: dict[str, Any]) -> dict[str, Any]:
     log_dir = _extract_log_dir(payload)
     try:
         log_dir.mkdir(parents=True, exist_ok=True)
+        os.chmod(log_dir, 0o777)
         _append_log(log_dir, f"[INFO] prepare_log_dir ok: {log_dir}")
         return {"ok": True, "detail": "", "log_path": str(log_dir)}
     except Exception as exc:
@@ -378,6 +379,15 @@ def _handle_run_cfgprosh(payload: dict[str, Any]) -> dict[str, Any]:
     return {'ok': True, 'detail': '', 'output': '\n'.join(merged_output)[-4000:]}
 
 
+def _handle_append_log(payload: dict[str, Any]) -> dict[str, Any]:
+    log_dir = _extract_log_dir(payload)
+    line = str(payload.get("line") or "").rstrip("\n")
+    if not line:
+        return {"ok": False, "detail": "line is empty"}
+    _append_log(log_dir, line)
+    return {"ok": True, "detail": ""}
+
+
 def _dispatch(action: str, payload: dict[str, Any]) -> dict[str, Any]:
     if action == 'ping':
         return {'ok': True, 'detail': ''}
@@ -391,6 +401,8 @@ def _dispatch(action: str, payload: dict[str, Any]) -> dict[str, Any]:
         return _handle_run_cfgprosh(payload)
     if action == 'native_validate_create_jobs':
         return _handle_validate_create_jobs(payload)
+    if action == 'native_append_log':
+        return _handle_append_log(payload)
     return {'ok': False, 'detail': f'unsupported action: {action}'}
 
 
