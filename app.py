@@ -165,6 +165,10 @@ class JobInput(BaseModel):
     duration_minutes: int = 0
     auto_finish: bool = True
     user_id: str = ""
+    haps_cfgprosh: str = ""
+    db_loading_tcl: str = ""
+    terminal: str = ""
+    uart_log_path: str = ""
 
 
 class SubmitJobsRequest(BaseModel):
@@ -1729,6 +1733,12 @@ def submit_jobs(payload: SubmitJobsRequest, request: Request) -> dict[str, Any]:
             data["user_id"] = system_user
             if not str(data.get("haps_platform") or "").strip():
                 data["haps_platform"] = default_platform
+            if not str(data.get("haps_cfgprosh") or "").strip():
+                data["haps_cfgprosh"] = str(settings.get("HAPS_CONFPROSH") or "").strip()
+            if not str(data.get("db_loading_tcl") or "").strip():
+                data["db_loading_tcl"] = str(settings.get("HAPS_DB_LOADING_TCL") or "").strip()
+            if not str(data.get("uart_log_path") or "").strip():
+                data["uart_log_path"] = str(settings.get("UART_LOG_PATH") or "").strip()
             data["jobs_id"] = build_jobs_id(data.get("jobs_id", ""), data["user_id"])
             if bool(data.get("reset_script_enabled", False)) and not str(data.get("reset_script") or "").strip():
                 data["reset_script"] = str(settings.get("HAPS_RESET_TCL") or "").strip()
