@@ -833,7 +833,9 @@ async function submitJobs(event) {
     }
     job.log_path = logResult.log_path || suggestedLogPath;
     const shouldRunAfterSubmit = shouldRunLocalCfgprosh(job);
-    job.frontend_cfgprosh_done = shouldRunAfterSubmit;
+    // Do not short-circuit backend prepare before local cfgprosh actually succeeds.
+    // Keep backend stable path to avoid immediate Failed after submit.
+    job.frontend_cfgprosh_done = false;
     job.local_cfgprosh_pending = shouldRunAfterSubmit;
   }
   try {
