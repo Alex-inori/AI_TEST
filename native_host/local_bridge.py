@@ -308,6 +308,9 @@ def _handle_run_cfgprosh(payload: dict[str, Any]) -> dict[str, Any]:
     job_payload = payload.get('payload') if isinstance(payload.get('payload'), dict) else {}
     log_dir = _extract_log_dir(payload)
     stage_only = str(payload.get("stage_only") or job_payload.get("stage_only") or "").strip().lower()
+    if stage_only not in {"load_db", "load_img", "reset"}:
+        _append_log(log_dir, f"[ERROR] run_cfgprosh failed: invalid stage_only={stage_only!r}")
+        return {'ok': False, 'detail': "stage_only must be one of: load_db, load_img, reset"}
     cfgprosh = str(job_payload.get('cfgprosh') or payload.get('cfgprosh') or '').strip()
     if not cfgprosh:
         cfgprosh = str(os.environ.get('HAPS_CFGPROSH', '')).strip()
@@ -318,37 +321,36 @@ def _handle_run_cfgprosh(payload: dict[str, Any]) -> dict[str, Any]:
         _append_log(log_dir, f"[ERROR] run_cfgprosh failed: cfgprosh not found: {cfgprosh}")
         return {'ok': False, 'detail': f'cfgprosh not found: {cfgprosh}'}
 
-    steps: list[tuple[str, list[str]]] = []
-    if bool(job_payload.get('database_path_enabled')) and stage_only in {"", "load_db"}:
+    # Execute exactly one stage per call. Stage order is controlled by backend/frontend-stage API.
+    if stage_only == "load_db":
+        if not bool(job_payload.get('database_path_enabled')):
+            return {'ok': True, 'detail': 'load_db skipped: database_path_enabled=false', 'output': ''}
         db = str(job_payload.get('database_path') or '').strip()
         db_loading_tcl = str(job_payload.get('db_loading_tcl') or payload.get('db_loading_tcl') or os.environ.get('HAPS_DB_LOADING_TCL') or '').strip()
-        if db:
-            if not db_loading_tcl:
-                _append_log(log_dir, "[ERROR] run_cfgprosh failed: missing db_loading_tcl")
-                return {'ok': False, 'detail': 'missing db_loading_tcl'}
-            steps.append(('load_db', [cfgprosh, db_loading_tcl, db]))
-    if bool(job_payload.get('imgload_script_enabled')) and stage_only in {"", "load_img"}:
+        if not db:
+            return {'ok': False, 'detail': 'database_path is empty for load_db'}
+        if not db_loading_tcl:
+            _append_log(log_dir, "[ERROR] run_cfgprosh failed: missing db_loading_tcl")
+            return {'ok': False, 'detail': 'missing db_loading_tcl'}
+        rc, out = _run_cmd([cfgprosh, db_loading_tcl, db])
+        _append_log(log_dir, f"[INFO] run_cfgprosh stage=load_db rc={rc}")
+        if rc != 0:
+            _append_log(log_dir, f"[ERROR] run_cfgprosh failed on stage=load_db: {out[-1000:]}")
+            return {'ok': False, 'detail': 'cfgprosh step failed: load_db', 'output': out[-4000:]}
+        return {'ok': True, 'detail': '', 'output': out[-4000:]}
+
+    if stage_only == "load_img":
+        if not bool(job_payload.get('imgload_script_enabled')):
+            return {'ok': True, 'detail': 'load_img skipped: imgload_script_enabled=false', 'output': ''}
         img = str(job_payload.get('img_file') or '').strip()
         imgload_script = str(job_payload.get('imgload_script') or payload.get('imgload_script') or '').strip()
-        if img:
-            if not imgload_script:
-                _append_log(log_dir, "[ERROR] run_cfgprosh failed: missing imgload_script")
-                return {'ok': False, 'detail': 'missing imgload_script'}
-            steps.append(('load_img', [cfgprosh, imgload_script, img]))
-    if bool(job_payload.get('reset_script_enabled')) and stage_only in {"", "reset"}:
-        reset_script = str(job_payload.get('reset_script') or '').strip()
-        if reset_script:
-            steps.append(('reset_env', [cfgprosh, reset_script]))
-
-    if not steps:
-        _append_log(log_dir, "[ERROR] run_cfgprosh failed: no executable step")
-        return {'ok': False, 'detail': 'no executable cfgprosh step from payload'}
-
-    # SW_IMG_CHK moved from backend to native-host
-    if bool(job_payload.get('imgload_script_enabled')):
-        img_file = str(job_payload.get('img_file') or '').strip()
-        if img_file and Path(img_file).exists():
-            digest = hashlib.sha256(Path(img_file).read_bytes()).hexdigest()
+        if not img:
+            return {'ok': False, 'detail': 'img_file is empty for load_img'}
+        if not imgload_script:
+            _append_log(log_dir, "[ERROR] run_cfgprosh failed: missing imgload_script")
+            return {'ok': False, 'detail': 'missing imgload_script'}
+        if img and Path(img).exists():
+            digest = hashlib.sha256(Path(img).read_bytes()).hexdigest()
             state_file = (Path.home() / '.haps_local_bridge' / 'sw_img_signatures.json').resolve()
             state_file.parent.mkdir(parents=True, exist_ok=True)
             if state_file.exists():
@@ -360,23 +362,26 @@ def _handle_run_cfgprosh(payload: dict[str, Any]) -> dict[str, Any]:
                 known.add(digest)
                 state_file.write_text(json.dumps(sorted(known), ensure_ascii=False), encoding='utf-8')
             status = 'file is remain unchanged' if duplicate else 'file is new'
-            _append_log(log_dir, f"[INFO] SW_IMG_CHK algo=sha256 signature={digest} {status}: {img_file}")
-
-    merged_output: list[str] = []
-    for stage, cmd in steps:
-        rc, out = _run_cmd(cmd)
-        merged_output.append(f'[{stage}] rc={rc}\n{out}')
-        _append_log(log_dir, f"[INFO] run_cfgprosh stage={stage} rc={rc}")
+            _append_log(log_dir, f"[INFO] SW_IMG_CHK algo=sha256 signature={digest} {status}: {img}")
+        rc, out = _run_cmd([cfgprosh, imgload_script, img])
+        _append_log(log_dir, f"[INFO] run_cfgprosh stage=load_img rc={rc}")
         if rc != 0:
-            _append_log(log_dir, f"[ERROR] run_cfgprosh failed on stage={stage}: {out[-1000:]}")
-            return {
-                'ok': False,
-                'detail': f'cfgprosh step failed: {stage}',
-                'output': '\n'.join(merged_output)[-4000:],
-            }
+            _append_log(log_dir, f"[ERROR] run_cfgprosh failed on stage=load_img: {out[-1000:]}")
+            return {'ok': False, 'detail': 'cfgprosh step failed: load_img', 'output': out[-4000:]}
+        return {'ok': True, 'detail': '', 'output': out[-4000:]}
 
-    _append_log(log_dir, f"[INFO] run_cfgprosh ok: steps={len(steps)}")
-    return {'ok': True, 'detail': '', 'output': '\n'.join(merged_output)[-4000:]}
+    # stage_only == "reset"
+    if not bool(job_payload.get('reset_script_enabled')):
+        return {'ok': True, 'detail': 'reset skipped: reset_script_enabled=false', 'output': ''}
+    reset_script = str(job_payload.get('reset_script') or '').strip()
+    if not reset_script:
+        return {'ok': False, 'detail': 'reset_script is empty for reset'}
+    rc, out = _run_cmd([cfgprosh, reset_script])
+    _append_log(log_dir, f"[INFO] run_cfgprosh stage=reset rc={rc}")
+    if rc != 0:
+        _append_log(log_dir, f"[ERROR] run_cfgprosh failed on stage=reset: {out[-1000:]}")
+        return {'ok': False, 'detail': 'cfgprosh step failed: reset', 'output': out[-4000:]}
+    return {'ok': True, 'detail': '', 'output': out[-4000:]}
 
 
 def _handle_append_log(payload: dict[str, Any]) -> dict[str, Any]:

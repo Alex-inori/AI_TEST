@@ -31,6 +31,14 @@
 - `reset_script` / `imgload_script`：仅在对应 enabled=true 时校验，要求存在、可访问、且后缀为 `.tcl`。
 - `img_file`：仅在 `imgload_script_enabled=true` 时校验，要求存在、可访问、且后缀为 `.bin/.img/.dat`。
 
+## native_run_cfgprosh 阶段执行
+
+- `native_run_cfgprosh` 每次调用只执行一个阶段，需传 `stage_only`：
+  - `load_db`
+  - `load_img`
+  - `reset`
+- 阶段顺序由后端流程控制并通过前端回传接口推进。
+
 ## 安装步骤（Linux）
 
 1. 将 `com.haps.local_bridge.json` 放到 Chrome Native Messaging 配置目录（如 `~/.config/google-chrome/NativeMessagingHosts/`）。
