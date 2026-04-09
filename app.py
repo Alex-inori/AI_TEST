@@ -171,6 +171,12 @@ class SubmitJobsRequest(BaseModel):
     jobs: list[JobInput] = Field(default_factory=list)
 
 
+class FrontendStageRequest(BaseModel):
+    stage: str
+    success: bool = True
+    detail: str = ""
+
+
 @dataclass
 class JobRecord:
     id: str
@@ -574,8 +580,7 @@ class JobManager:
 
     def _start_job(self, payload: dict[str, Any]) -> JobRecord:
         now = datetime.now().isoformat(timespec="seconds")
-        # Prepare stages are executed on frontend native-host side.
-        initial_status = "Running::HAPS_RDY"
+        initial_status = "Running::Loading HAPS_DB" if self._should_run_prepare(payload) else "Running::HAPS_RDY"
         job = JobRecord(
             id=str(uuid.uuid4()),
             payload=payload,
@@ -846,119 +851,11 @@ class JobManager:
             lock_settings = self._read_haps_settings()
             lock_cfgshell_cmd = list(lock_settings.get("HAPS_CONFPROSH_CMD") or [])
 
-            # Backend no longer executes HAPS_DB/SW_IMG/Reset prepare stages.
-            # These stages are migrated to frontend native-host execution.
-            if False and self._should_run_prepare(payload) and not self._frontend_cfgprosh_done(payload):
-                settings = lock_settings or self._read_haps_settings()
-                cfgshell_cmd = lock_cfgshell_cmd or list(settings.get("HAPS_CONFPROSH_CMD") or [])
-                db_load_script = str(settings.get("HAPS_DB_LOADING_TCL") or "").strip()
-                database_path = str(payload.get("database_path") or "").strip()
-                reset_script = str(payload.get("reset_script") or "").strip()
-                haps_platform = str(payload.get("haps_platform") or "").strip()
-                hmf_txt = str(payload.get("haps_hmf_txt") or "").strip()
-                ran_imgload = False
-
-                with self._lock:
-                    if not self._job_is_current_locked(job_id, run_token):
-                        return
-                    self._jobs[job_id].status = "Running::Loading HAPS_DB"
-
-                db_load_cmd = [*cfgshell_cmd, db_load_script, database_path]
-                if "HAPS100" in haps_platform:
-                    db_load_cmd.append(hmf_txt)
-                self._log_stage_timestamp(log_file, "load_db", "start")
-                rc1 = subprocess.run(db_load_cmd, stdout=log_file, stderr=log_file, text=True).returncode
-                self._log_stage_timestamp(log_file, "load_db", "end")
-                if rc1 != 0:
-                    self._write_process_log(log_file, f"[HAPS_LOCK] HAPS_DB load failed, exit={rc1}")
-                    with self._lock:
-                        if self._job_is_current_locked(job_id, run_token):
-                            self._jobs[job_id].status = "Failed"
-                            self._jobs[job_id].end_time = datetime.now().isoformat(timespec="seconds")
-                            self._jobs[job_id].message = f"HAPS_DB load failed (exit={rc1})"
-                            self._append_bg_log(job_id=job_id, stage="failed", detail=self._jobs[job_id].message)
-                            self._append_utilization_log(self._jobs[job_id])
-                            self._promote_waiting_locked()
-                    return
-
-                if self._should_run_imgload(payload):
-                    imgload_script = str(payload.get("imgload_script") or "").strip()
-                    img_file = str(payload.get("img_file") or "").strip()
-                    jobs_id = str(payload.get("jobs_id") or job_id)
-                    duration_minutes = self._duration_minutes(payload)
-                    if not self._wait_prepare_delay(job_id, run_token, self.PREPARE_DB_TO_IMG_DELAY_SECONDS):
-                        return
-                    with self._lock:
-                        if not self._job_is_current_locked(job_id, run_token):
-                            return
-                        self._jobs[job_id].status = "Running::Loading SW_IMG"
-
-                    dedup_result: dict[str, str] = {}
-                    dedup_error: dict[str, str] = {}
-
-                    def _collect_img_signature() -> None:
-                        try:
-                            algo, signature = self._calculate_img_dedup_signature(img_file)
-                            dedup_result["algo"] = algo
-                            dedup_result["signature"] = signature
-                        except Exception as exc:
-                            dedup_error["value"] = str(exc)
-
-                    dedup_thread = threading.Thread(target=_collect_img_signature, daemon=True)
-                    dedup_thread.start()
-                    self._log_stage_timestamp(log_file, "load_img", "start")
-                    rc_img = subprocess.run([*cfgshell_cmd, imgload_script, img_file], stdout=log_file, stderr=log_file, text=True).returncode
-                    self._log_stage_timestamp(log_file, "load_img", "end")
-                    dedup_thread.join()
-                    if "signature" in dedup_result:
-                        signature = dedup_result["signature"]
-                        with self._lock:
-                            duplicate = signature in self._img_dedup_signatures
-                            if not duplicate:
-                                self._img_dedup_signatures.add(signature)
-                        dedup_text = "file is remain unchanged" if duplicate else "file is new"
-                        self._write_process_log(
-                            log_file,
-                            f"[HAPS_LOCK] SW_IMG_CHECK algo={dedup_result['algo']} signature={signature} {dedup_text}: {img_file}",
-                        )
-                    elif "value" in dedup_error:
-                        self._write_process_log(log_file, f"[HAPS_LOCK] SW_IMG_CHECK failed: {dedup_error['value']}")
-                    if rc_img != 0:
-                        self._write_process_log(log_file, f"[HAPS_LOCK] SW_IMG load failed, exit={rc_img}")
-                        with self._lock:
-                            if self._job_is_current_locked(job_id, run_token):
-                                self._jobs[job_id].status = "Failed"
-                                self._jobs[job_id].end_time = datetime.now().isoformat(timespec="seconds")
-                                self._jobs[job_id].message = f"SW_IMG load failed (exit={rc_img})"
-                                self._append_bg_log(job_id=job_id, stage="failed", detail=self._jobs[job_id].message)
-                                self._append_utilization_log(self._jobs[job_id])
-                                self._promote_waiting_locked()
-                        return
-                    ran_imgload = True
-
-                with self._lock:
-                    if not self._job_is_current_locked(job_id, run_token):
-                        return
-                    self._jobs[job_id].status = "Running::Resetting HAPS_ENV"
-
-                prepare_delay = self._prepare_reset_delay_seconds(ran_imgload)
-                if not self._wait_prepare_delay(job_id, run_token, prepare_delay):
-                    return
-
-                self._log_stage_timestamp(log_file, "reset", "start")
-                rc2 = subprocess.run([*cfgshell_cmd, reset_script], stdout=log_file, stderr=log_file, text=True).returncode
-                self._log_stage_timestamp(log_file, "reset", "end")
-                if rc2 != 0:
-                    self._write_process_log(log_file, f"[HAPS_LOCK] HAPS_ENV reset failed, exit={rc2}")
-                    with self._lock:
-                        if self._job_is_current_locked(job_id, run_token):
-                            self._jobs[job_id].status = "Failed"
-                            self._jobs[job_id].end_time = datetime.now().isoformat(timespec="seconds")
-                            self._jobs[job_id].message = f"HAPS_ENV reset failed (exit={rc2})"
-                            self._append_bg_log(job_id=job_id, stage="failed", detail=self._jobs[job_id].message)
-                            self._append_utilization_log(self._jobs[job_id])
-                            self._promote_waiting_locked()
-                    return
+            if self._should_run_prepare(payload) and not self._frontend_cfgprosh_done(payload):
+                # Frontend/native-host executes prepare stages in order.
+                # Backend only keeps status for flow control.
+                self._append_bg_log(job_id=job_id, stage="flow", detail="waiting frontend prepare stages")
+                return
 
             with self._lock:
                 if not self._job_is_current_locked(job_id, run_token):
@@ -1145,6 +1042,61 @@ class JobManager:
                 self._append_bg_log(job_id=job_id, stage="failed", detail=current.message)
                 self._append_utilization_log(current)
                 self._promote_waiting_locked()
+
+    def apply_frontend_prepare_stage(
+        self,
+        *,
+        job_id: str,
+        user_id: str,
+        stage: str,
+        success: bool,
+        detail: str = "",
+    ) -> JobRecord:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job:
+                raise KeyError(job_id)
+            payload = dict(job.payload or {})
+            if str(payload.get("user_id") or "") != str(user_id):
+                raise PermissionError("only owner can update frontend stage")
+            if not self._is_running_status(job.status):
+                return job
+
+            if not success:
+                job.status = "Failed"
+                job.end_time = datetime.now().isoformat(timespec="seconds")
+                job.message = detail or f"frontend stage failed: {stage}"
+                self._append_bg_log(job_id=job_id, stage="failed", detail=job.message)
+                self._append_utilization_log(job)
+                self._promote_waiting_locked()
+                return job
+
+            normalized_stage = str(stage or "").strip().lower()
+            if normalized_stage == "load_db":
+                if self._should_run_imgload(payload):
+                    job.status = "Running::Loading SW_IMG"
+                    job.message = "frontend stage complete: load_db -> load_img"
+                else:
+                    job.status = "Running::Resetting HAPS_ENV"
+                    job.message = "frontend stage complete: load_db -> reset"
+                return job
+
+            if normalized_stage == "load_img":
+                job.status = "Running::Resetting HAPS_ENV"
+                job.message = "frontend stage complete: load_img -> reset"
+                return job
+
+            if normalized_stage == "reset":
+                job.status = "Running::HAPS_RDY"
+                job.message = "frontend prepare done"
+                payload["frontend_cfgprosh_done"] = True
+                job.payload = payload
+                self._launch_job_process_locked(job)
+                self._append_bg_log(job_id=job_id, stage="flow", detail="frontend prepare done, launch triggered")
+                return job
+
+            job.message = detail or f"frontend stage update ignored: {stage}"
+            return job
 
     def stop(self, job_id: str) -> JobRecord:
         with self._lock:
@@ -1780,6 +1732,24 @@ def open_job_terminal(job_id: str, request: Request) -> dict[str, Any]:
         status_code=410,
         detail="open-terminal was moved to frontend native-host implementation; use Chrome extension bridge",
     )
+
+
+@app.post("/api/jobs/{job_id}/frontend-stage")
+def apply_frontend_stage(job_id: str, payload: FrontendStageRequest, request: Request) -> dict[str, Any]:
+    user_id = get_system_user_id(request)
+    try:
+        job = manager.apply_frontend_prepare_stage(
+            job_id=job_id,
+            user_id=user_id,
+            stage=payload.stage,
+            success=bool(payload.success),
+            detail=str(payload.detail or ""),
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="job not found") from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return manager._to_api(job)
 
 
 @app.post("/api/jobs/{job_id}/confirm-stop")

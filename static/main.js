@@ -9,7 +9,7 @@ const autoFinishEnabled = document.getElementById('autoFinishEnabled');
 let currentUser = 'user';
 let currentUserId = '0';
 const promptedTimeoutConfirmJobs = new Set();
-const localCfgproshTriggeredJobs = new Set();
+const localCfgproshTriggeredStages = new Set();
 let stopConfirmModal = null;
 const expandedUartJobs = new Set();
 const uartBuffers = new Map();
@@ -903,17 +903,34 @@ async function runLocalStagesForJob(job, options = {}) {
     if (!silent) alert('No local stage configured for this job.');
     return;
   }
+  const statusText = String(job.status || '');
+  let stage = '';
+  if (statusText === 'Running::Loading HAPS_DB') stage = 'load_db';
+  else if (statusText === 'Running::Loading SW_IMG') stage = 'load_img';
+  else if (statusText === 'Running::Resetting HAPS_ENV') stage = 'reset';
+  else stage = 'load_db';
+
   const result = await getLocalBridge().runCfgprosh({
     source: 'running_job',
+    stage_only: stage,
     job_id: String(job.id || ''),
     user_id: String(currentUserId || ''),
-    payload,
+    payload: { ...payload, stage_only: stage },
   }).catch((error) => ({ ok: false, detail: error instanceof Error ? error.message : String(error) }));
-  if (!result.ok) {
+  const reportResp = await fetch(buildApiUrl(`/api/jobs/${job.id}/frontend-stage`), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      stage,
+      success: !!result.ok,
+      detail: String(result.detail || ''),
+    }),
+  }).catch(() => null);
+  if (!result.ok || !reportResp || !reportResp.ok) {
     if (!silent) alert(`Local cfgprosh failed: ${result.detail || 'unknown error'}`);
     return;
   }
-  if (!silent) alert('Local cfgprosh execution finished.');
+  if (!silent) alert(`Local cfgprosh stage finished: ${stage}`);
 }
 function formatWait(seconds) {
   const safe = Math.max(0, Number(seconds) || 0);
@@ -1028,10 +1045,10 @@ function renderRecentJobs(jobs) {
       && isOwner
       && payload.local_cfgprosh_pending
       && shouldRunLocalCfgprosh(payload)
-      && !localCfgproshTriggeredJobs.has(String(job.id)),
+      && !localCfgproshTriggeredStages.has(`${String(job.id)}::${String(job.status || '')}`),
     );
     if (shouldRunPendingLocal) {
-      localCfgproshTriggeredJobs.add(String(job.id));
+      localCfgproshTriggeredStages.add(`${String(job.id)}::${String(job.status || '')}`);
       runLocalStagesForJob(job, { silent: true });
     }
     if (jobUartPaths.length && isOwner) {
@@ -1139,8 +1156,9 @@ async function refreshRecentJobs() {
   Array.from(promptedTimeoutConfirmJobs).forEach((jobId) => {
     if (!runningIds.has(jobId)) promptedTimeoutConfirmJobs.delete(jobId);
   });
-  Array.from(localCfgproshTriggeredJobs).forEach((jobId) => {
-    if (!runningIds.has(jobId)) localCfgproshTriggeredJobs.delete(jobId);
+  Array.from(localCfgproshTriggeredStages).forEach((stageKey) => {
+    const jobId = String(stageKey).split('::')[0];
+    if (!runningIds.has(jobId)) localCfgproshTriggeredStages.delete(stageKey);
   });
   const modal = ensureStopConfirmModal();
   const currentModalJobId = modal.overlay.dataset.jobId;
