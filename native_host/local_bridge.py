@@ -311,7 +311,13 @@ def _handle_run_cfgprosh(payload: dict[str, Any]) -> dict[str, Any]:
     if stage_only not in {"load_db", "load_img", "reset"}:
         _append_log(log_dir, f"[ERROR] run_cfgprosh failed: invalid stage_only={stage_only!r}")
         return {'ok': False, 'detail': "stage_only must be one of: load_db, load_img, reset"}
-    cfgprosh = str(job_payload.get('cfgprosh') or payload.get('cfgprosh') or '').strip()
+    cfgprosh = str(
+        job_payload.get('cfgprosh')
+        or payload.get('cfgprosh')
+        or job_payload.get('haps_cfgprosh')
+        or payload.get('haps_cfgprosh')
+        or ''
+    ).strip()
     if not cfgprosh:
         cfgprosh = str(os.environ.get('HAPS_CFGPROSH', '')).strip()
     if not cfgprosh:
