@@ -23,6 +23,12 @@
 - `log_path` 由前端在提交前调用 `native_prepare_log_dir` 创建并传入后续 action。
 - `SW_IMG_CHK` 在 native-host 执行，摘要缓存位于 `~/.haps_local_bridge/sw_img_signatures.json`。
 
+## CreateJobs 校验规则（native_validate_create_jobs）
+
+- `database_path`：仅在 `database_path_enabled=true` 时校验，要求路径存在且可访问。
+- `reset_script` / `imgload_script`：仅在对应 enabled=true 时校验，要求存在、可访问、且后缀为 `.tcl`。
+- `img_file`：仅在 `imgload_script_enabled=true` 时校验，要求存在、可访问、且后缀为 `.bin/.img/.dat`。
+
 ## 安装步骤（Linux）
 
 1. 将 `com.haps.local_bridge.json` 放到 Chrome Native Messaging 配置目录（如 `~/.config/google-chrome/NativeMessagingHosts/`）。

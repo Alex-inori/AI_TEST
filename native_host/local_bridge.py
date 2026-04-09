@@ -218,15 +218,16 @@ def _run_cmd(cmd: list[str], cwd: str | None = None) -> tuple[int, str]:
     return proc.returncode, output[-4000:]
 
 
-def _validate_job_paths(job: dict[str, Any], allowed_root: Path) -> list[str]:
+def _validate_job_paths(job: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     job_id = str(job.get('jobs_id') or '-')
 
-    def _check_path(
+    def _check_path_access(
         key: str,
         *,
         enabled: bool = True,
         required: bool = False,
+        must_be_file: bool = False,
         suffixes: tuple[str, ...] | None = None,
     ) -> None:
         if not enabled:
@@ -238,24 +239,44 @@ def _validate_job_paths(job: dict[str, Any], allowed_root: Path) -> list[str]:
         if not raw:
             return
         p = Path(raw).expanduser().resolve()
-        if not _is_child(allowed_root, p):
-            errors.append(f'{job_id}: {key} is out of allowed root')
-            return
         if not p.exists():
             errors.append(f'{job_id}: {key} not exists -> {p}')
             return
-        if suffixes and p.is_file() and p.suffix.lower() not in suffixes:
+        if must_be_file and not p.is_file():
+            errors.append(f'{job_id}: {key} must be file -> {p}')
+            return
+        if not os.access(str(p), os.R_OK):
+            errors.append(f'{job_id}: {key} not accessible -> {p}')
+            return
+        if suffixes and p.suffix.lower() not in suffixes:
             errors.append(f'{job_id}: {key} suffix invalid -> {p.suffix}')
 
     database_enabled = bool(job.get('database_path_enabled'))
     reset_enabled = bool(job.get('reset_script_enabled'))
     imgload_enabled = bool(job.get('imgload_script_enabled'))
 
-    _check_path('binfile', enabled=True, required=False, suffixes=('.bin', '.img'))
-    _check_path('database_path', enabled=database_enabled, required=database_enabled)
-    _check_path('reset_script', enabled=reset_enabled, required=reset_enabled, suffixes=('.tcl',))
-    _check_path('imgload_script', enabled=imgload_enabled, required=imgload_enabled, suffixes=('.tcl',))
-    _check_path('img_file', enabled=imgload_enabled, required=imgload_enabled, suffixes=('.img', '.bin'))
+    _check_path_access('database_path', enabled=database_enabled, required=database_enabled)
+    _check_path_access(
+        'reset_script',
+        enabled=reset_enabled,
+        required=reset_enabled,
+        must_be_file=True,
+        suffixes=('.tcl',),
+    )
+    _check_path_access(
+        'imgload_script',
+        enabled=imgload_enabled,
+        required=imgload_enabled,
+        must_be_file=True,
+        suffixes=('.tcl',),
+    )
+    _check_path_access(
+        'img_file',
+        enabled=imgload_enabled,
+        required=imgload_enabled,
+        must_be_file=True,
+        suffixes=('.img', '.bin', '.dat'),
+    )
     return errors
 
 
@@ -266,13 +287,12 @@ def _handle_validate_create_jobs(payload: dict[str, Any]) -> dict[str, Any]:
         for log_dir in log_dirs:
             _append_log(log_dir, "[ERROR] validate_create_jobs failed: jobs is empty")
         return {'ok': False, 'detail': 'jobs is empty', 'errors': ['jobs is empty']}
-    allowed_root = Path(os.environ.get('HAPS_BROWSE_ROOT', str(Path.home()))).resolve()
     errors: list[str] = []
     for item in jobs:
         if not isinstance(item, dict):
             errors.append('invalid job payload item')
             continue
-        errors.extend(_validate_job_paths(item, allowed_root))
+        errors.extend(_validate_job_paths(item))
     if errors:
         reason = ' | '.join(errors[:10])
         for log_dir in log_dirs:
