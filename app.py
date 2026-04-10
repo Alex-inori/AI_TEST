@@ -35,6 +35,7 @@ from pydantic import BaseModel, Field
 APP_ROOT = Path(__file__).resolve().parent
 CFGSHELL_CONFIG_FILE = APP_ROOT / "cfgshell.conf"
 UTILIZATION_LOG_FILE = APP_ROOT / "ultization.log"
+BACKEND_DEBUG_LOG_FILE = Path("/tmp/haps_backend_log.log")
 DEFAULT_SERVICE_PORT = 8000
 DEFAULT_CREATE_JOBS_MAX_NUM = 5
 DEFAULT_RECENT_JOBS_MAX_NUM = 10
@@ -135,6 +136,15 @@ def load_ui_limits() -> dict[str, int]:
 def load_terminal_path() -> str:
     cfg_entries = _load_cfg_entries(required=False)
     return str(cfg_entries.get("TERMINAL") or "").strip()
+
+
+def append_backend_debug_log(message: str) -> None:
+    timestamp = datetime.now().isoformat(timespec="seconds")
+    try:
+        with BACKEND_DEBUG_LOG_FILE.open("a", encoding="utf-8") as handle:
+            handle.write(f"[{timestamp}] {message}\n")
+    except Exception:
+        return
 
 
 def build_frontend_stage_sequence(payload: dict[str, Any]) -> list[str]:
@@ -1194,6 +1204,7 @@ class JobManager:
             if str(payload.get("user_id") or "") != user_id:
                 raise PermissionError("can only update own running job")
             if not bool(payload.get("frontend_managed", False)):
+                append_backend_debug_log(f"stage_action_denied job_id={job_id} reason=not_frontend_managed")
                 raise ValueError("job is not frontend managed")
             sequence = [str(item) for item in list(payload.get("frontend_stage_sequence") or []) if str(item)]
             index = int(payload.get("frontend_stage_index", 0) or 0)
@@ -1222,9 +1233,11 @@ class JobManager:
             sequence = [str(item) for item in list(payload.get("frontend_stage_sequence") or []) if str(item)]
             index = int(payload.get("frontend_stage_index", 0) or 0)
             if not sequence or index >= len(sequence):
+                append_backend_debug_log(f"stage_action_done job_id={job_id} reason=sequence_completed")
                 return {"done": True, "stage": "Running::HAPS_RDY", "action": ""}
             stage = sequence[index]
             if stage == "Running::HAPS_RDY":
+                append_backend_debug_log(f"stage_action_done job_id={job_id} reason=already_haps_rdy")
                 return {"done": True, "stage": stage, "action": ""}
 
             if force_refresh or not str(payload.get("frontend_stage_deadline") or "").strip():
@@ -1233,6 +1246,7 @@ class JobManager:
                 ).isoformat(timespec="seconds")
             job.status = stage
             job.message = f"frontend action dispatched: {stage}"
+            append_backend_debug_log(f"stage_action_dispatched job_id={job_id} stage={stage} timeout={FRONTEND_STAGE_TIMEOUT_SECONDS}s")
             return {
                 "done": False,
                 "stage": stage,
@@ -1250,6 +1264,7 @@ class JobManager:
             if str(payload.get("user_id") or "") != user_id:
                 raise PermissionError("can only update own running job")
             if not bool(payload.get("frontend_managed", False)):
+                append_backend_debug_log(f"stage_complete_denied job_id={job_id} stage={stage} reason=not_frontend_managed")
                 raise ValueError("job is not frontend managed")
             if not self._is_running_status(job.status):
                 return job
@@ -1260,6 +1275,7 @@ class JobManager:
                         job.status = "Failed"
                         job.end_time = datetime.now().isoformat(timespec="seconds")
                         job.message = "frontend stage timeout (>5 minutes)"
+                        append_backend_debug_log(f"stage_complete_failed job_id={job_id} stage={stage} reason=timeout")
                         self._append_utilization_log(job)
                         self._promote_waiting_locked()
                         return job
@@ -1272,12 +1288,16 @@ class JobManager:
                 raise ValueError("invalid frontend stage sequence")
             expected = sequence[index]
             if expected != stage:
+                append_backend_debug_log(f"stage_complete_failed job_id={job_id} stage={stage} reason=out_of_order expected={expected}")
                 raise ValueError(f"stage out of order, expected: {expected}")
 
             if not success:
                 job.status = "Failed"
                 job.end_time = datetime.now().isoformat(timespec="seconds")
                 job.message = message or f"frontend stage failed: {stage}"
+                append_backend_debug_log(
+                    f"stage_complete_failed job_id={job_id} stage={stage} reason=frontend_reported_failed detail={job.message}"
+                )
                 payload["frontend_stage_deadline"] = ""
                 self._append_utilization_log(job)
                 self._promote_waiting_locked()
@@ -1288,10 +1308,12 @@ class JobManager:
             if index + 1 >= len(sequence):
                 job.status = "Running::HAPS_RDY"
                 job.message = message or "frontend stages completed"
+                append_backend_debug_log(f"stage_complete_success job_id={job_id} stage={stage} next=Running::HAPS_RDY")
                 return job
             next_stage = sequence[index + 1]
             job.status = next_stage
             job.message = message or f"frontend stage completed: {stage}"
+            append_backend_debug_log(f"stage_complete_success job_id={job_id} stage={stage} next={next_stage}")
             return job
 
     def confirm_stop(self, job_id: str, user_id: str) -> JobRecord:
@@ -2047,10 +2069,13 @@ def get_frontend_stage_action(job_id: str, body: FrontendStageActionRequest, req
     try:
         return manager.get_frontend_stage_action(job_id, user_id, force_refresh=body.force_refresh)
     except KeyError as exc:
+        append_backend_debug_log(f"stage_action_error job_id={job_id} reason=job_not_found")
         raise HTTPException(status_code=404, detail="job not found") from exc
     except PermissionError as exc:
+        append_backend_debug_log(f"stage_action_error job_id={job_id} reason=permission detail={exc}")
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
+        append_backend_debug_log(f"stage_action_error job_id={job_id} reason=value_error detail={exc}")
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
@@ -2060,10 +2085,13 @@ def complete_frontend_stage(job_id: str, body: FrontendStageCompleteRequest, req
     try:
         job = manager.complete_frontend_stage(job_id, body.stage, body.success, body.message, user_id)
     except KeyError as exc:
+        append_backend_debug_log(f"stage_complete_error job_id={job_id} stage={body.stage} reason=job_not_found")
         raise HTTPException(status_code=404, detail="job not found") from exc
     except PermissionError as exc:
+        append_backend_debug_log(f"stage_complete_error job_id={job_id} stage={body.stage} reason=permission detail={exc}")
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
+        append_backend_debug_log(f"stage_complete_error job_id={job_id} stage={body.stage} reason=value_error detail={exc}")
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return manager._to_api(job)
 

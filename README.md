@@ -112,6 +112,10 @@ pip install fastapi uvicorn pyserial
 2. 服务器防火墙是否放行 8000 端口；
 3. 访问的是正确的服务器 IP。
 
+### Q4: Frontend stage 提交后直接 Failed
+
+后端会将阶段调度与失败原因写入：`/tmp/haps_backend_log.log`，可先查看该文件定位具体失败阶段与错误详情。
+
 ---
 
 ## API
