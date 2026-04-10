@@ -1,0 +1,9 @@
+{
+  "name": "com.haps.job_console_host",
+  "description": "Native host for HAPS Job Console extension",
+  "path": "/ABSOLUTE/PATH/TO/AI_TEST/native_host/host.py",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://REPLACE_WITH_EXTENSION_ID/"
+  ]
+}

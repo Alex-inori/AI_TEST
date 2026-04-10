@@ -20,6 +20,10 @@ let hapsPlatforms = [];
 let uartDevices = [];
 let servicePort = 8000;
 let createJobsMaxNum = 5;
+let runtimeConfig = {};
+const FRONTEND_STAGE_TIMEOUT_MS = 5 * 60 * 1000;
+const EXT_SOURCE_WEB = 'cfgshell-web';
+const EXT_SOURCE_BRIDGE = 'cfgshell-extension';
 
 function serviceBaseUrl() {
   return `http://127.0.0.1:${servicePort}`;
@@ -29,6 +33,45 @@ function wsBaseUrl() {
 }
 function buildApiUrl(path) {
   return `${serviceBaseUrl()}${path}`;
+}
+function getExtensionId() {
+  return String(runtimeConfig.CHROME_EXTENSION_ID || '').trim();
+}
+function hasChromeExtensionApi() {
+  return true;
+}
+function callExtension(action, payload = {}, timeoutMs = 10000) {
+  return new Promise((resolve, reject) => {
+    if (!hasChromeExtensionApi()) return reject(new Error('Chrome extension bridge not available.'));
+    const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    let done = false;
+    const timer = window.setTimeout(() => {
+      if (done) return;
+      done = true;
+      reject(new Error(`Extension timeout for ${action}`));
+    }, timeoutMs);
+    const onMessage = (event) => {
+      if (event.source !== window) return;
+      const msg = event.data || {};
+      if (msg.source !== EXT_SOURCE_BRIDGE || msg.type !== 'CFGSHELL_EXTENSION_RESPONSE') return;
+      if (String(msg.requestId || '') !== requestId) return;
+      if (done) return;
+      done = true;
+      window.clearTimeout(timer);
+      window.removeEventListener('message', onMessage);
+      if (!msg.ok) return reject(new Error(msg.error || 'Extension call failed.'));
+      resolve(msg.data || {});
+    };
+    window.addEventListener('message', onMessage);
+    window.postMessage({
+      source: EXT_SOURCE_WEB,
+      type: 'CFGSHELL_EXTENSION_REQUEST',
+      requestId,
+      extensionId: getExtensionId(),
+      action,
+      payload,
+    }, '*');
+  });
 }
 function trimOldestCreateJobsIfNeeded(limit = createJobsMaxNum) {
   const max = Number.parseInt(limit, 10);
@@ -750,25 +793,36 @@ function collectNewJobs() {
     };
   });
 }
-function validateJobsBeforeSubmit(jobs) {
+async function validateJobsBeforeSubmit(jobs) {
   const duplicateUarts = new Set();
   const usedUarts = new Set();
   const tclRegex = /\.tcl$/i;
   const imgRegex = /\.(img|bin)$/i;
+  const defaultLogRoot = String(runtimeConfig.UART_LOG_PATH || '').trim();
 
-  jobs.forEach((job) => {
+  for (const job of jobs) {
     if (job.database_path_enabled && !job.database_path) {
       throw new Error(`Job ${job.jobs_id || '-'}: DataBase Path is enabled but empty.`);
     }
+    if (job.database_path_enabled && hasChromeExtensionApi()) {
+      await callExtension('validatePath', { path: job.database_path, type: 'directory', mustExist: true });
+    }
     if (job.reset_script_enabled) {
+      if (!job.reset_script) throw new Error(`Job ${job.jobs_id || '-'}: Reset Script is enabled but empty.`);
       if (job.reset_script && !tclRegex.test(job.reset_script)) throw new Error(`Job ${job.jobs_id || '-'}: Reset Script must be a .tcl file.`);
+      if (hasChromeExtensionApi()) await callExtension('validatePath', { path: job.reset_script, type: 'file', mustExist: true });
     }
     if (job.imgload_script_enabled) {
+      if (!job.imgload_script) throw new Error(`Job ${job.jobs_id || '-'}: ImgLoad Script Path is enabled but empty.`);
       if (job.imgload_script && !tclRegex.test(job.imgload_script)) throw new Error(`Job ${job.jobs_id || '-'}: ImgLoad Script must be a .tcl file.`);
       if (!job.database_path_enabled) throw new Error(`Job ${job.jobs_id || '-'}: ImgLoad Script Path requires DataBase Path enabled.`);
       if (!job.reset_script_enabled) throw new Error(`Job ${job.jobs_id || '-'}: ImgLoad Script Path requires Reset Script Path enabled.`);
       if (!job.img_file) throw new Error(`Job ${job.jobs_id || '-'}: ImgLoad Script Path is enabled but IMG File path is empty.`);
       if (!imgRegex.test(job.img_file)) throw new Error(`Job ${job.jobs_id || '-'}: IMG File path must be a .img or .bin file.`);
+      if (hasChromeExtensionApi()) {
+        await callExtension('validatePath', { path: job.imgload_script, type: 'file', mustExist: true });
+        await callExtension('validatePath', { path: job.img_file, type: 'file', mustExist: true });
+      }
     }
 
     const localSet = new Set();
@@ -783,7 +837,19 @@ function validateJobsBeforeSubmit(jobs) {
       if (usedUarts.has(path)) duplicateUarts.add(path);
       usedUarts.add(path);
     });
-  });
+    const safeJobsId = String(job.jobs_id || '').replace(/[^a-zA-Z0-9_-]/g, '_') || `job_${Date.now()}`;
+    const logBase = defaultLogRoot ? defaultLogRoot.replace(/\/+$/, '') : '.';
+    const logPath = `${logBase}/${safeJobsId}`;
+    job.log_path = logPath;
+    if (hasChromeExtensionApi()) {
+      await callExtension('ensureDirectory', { path: logPath, mode: '0777' });
+      await callExtension('appendFile', {
+        path: `${logPath}/frontend.log`,
+        content: `[${new Date().toISOString()}] job validated in frontend\n`,
+      });
+    }
+    job.frontend_validated = true;
+  }
 
   if (duplicateUarts.size) {
     throw new Error(`Duplicate UART path detected: ${Array.from(duplicateUarts).join(', ')}`);
@@ -793,7 +859,7 @@ async function submitJobs(event) {
   event.preventDefault();
   const jobs = collectNewJobs();
   try {
-    validateJobsBeforeSubmit(jobs);
+    await validateJobsBeforeSubmit(jobs);
   } catch (err) {
     alert(err instanceof Error ? err.message : String(err));
     return;
@@ -804,9 +870,54 @@ async function submitJobs(event) {
     body: JSON.stringify({ jobs }),
   });
   if (!response.ok) return alert(`Submit failed: ${await response.text()}`);
+  const result = await response.json();
+  const createdJobs = Array.isArray(result.created) ? result.created : [];
+  for (const created of createdJobs) {
+    executeFrontendStages(created).catch((error) => {
+      console.error(error);
+    });
+  }
   newJobsList.innerHTML = '';
   initJobsTimingSettings();
   createNewJobCard();
+  refreshRecentJobs();
+  refreshWaitingJobs();
+}
+async function executeFrontendStages(job) {
+  const payload = job && job.payload ? job.payload : {};
+  const sequence = Array.isArray(payload.frontend_stage_sequence) ? payload.frontend_stage_sequence : [];
+  if (!sequence.length) return;
+  for (const stage of sequence) {
+    if (stage === 'Running::HAPS_RDY') break;
+    const stageStartResp = await fetch(buildApiUrl(`/api/jobs/${job.id}/frontend-stage/start`), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ stage }),
+    });
+    if (!stageStartResp.ok) throw new Error(await stageStartResp.text());
+    const startedAt = Date.now();
+    let stageMessage = `${stage} completed in frontend`;
+    let success = true;
+    try {
+      if (hasChromeExtensionApi()) {
+        await callExtension('runStage', { stage, job_id: job.id, payload }, FRONTEND_STAGE_TIMEOUT_MS);
+      }
+    } catch (error) {
+      success = false;
+      stageMessage = error instanceof Error ? error.message : String(error);
+    }
+    if ((Date.now() - startedAt) > FRONTEND_STAGE_TIMEOUT_MS) {
+      success = false;
+      stageMessage = `${stage} timeout after 5 minutes`;
+    }
+    const completeResp = await fetch(buildApiUrl(`/api/jobs/${job.id}/frontend-stage/complete`), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ stage, success, message: stageMessage }),
+    });
+    if (!completeResp.ok) throw new Error(await completeResp.text());
+    if (!success) break;
+  }
   refreshRecentJobs();
   refreshWaitingJobs();
 }
@@ -825,12 +936,19 @@ async function stopAndResubmitJob(jobId) {
   refreshWaitingJobs();
 }
 async function openRunningJobTerminal(jobId) {
-  const response = await fetch(buildApiUrl(`/api/jobs/${jobId}/open-terminal`), { method: 'POST' });
-  if (!response.ok) {
-    try {
-      const detail = await response.text();
-      alert(`Open Terminal failed: ${detail}`);
-    } catch (_) {}
+  const jobsResp = await fetch(buildApiUrl('/api/jobs'));
+  if (!jobsResp.ok) return alert(`Open Terminal failed: ${await jobsResp.text()}`);
+  const data = await jobsResp.json();
+  const jobs = Array.isArray(data.jobs) ? data.jobs : [];
+  const target = jobs.find((item) => String(item.id) === String(jobId));
+  if (!target) return alert('Open Terminal failed: job not found');
+  const terminalPath = String(runtimeConfig.TERMINAL || '').trim();
+  const cwd = String((target.payload || {}).log_path || '').trim();
+  if (!terminalPath) return alert('Open Terminal failed: TERMINAL is missing from backend runtime config.');
+  try {
+    await callExtension('openTerminal', { terminalPath, cwd, jobId: String(jobId) }, 20000);
+  } catch (error) {
+    alert(`Open Terminal failed: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 function formatWait(seconds) {
@@ -1058,6 +1176,13 @@ async function bootstrap() {
       if (Number.isFinite(parsedPort) && parsedPort > 0) servicePort = parsedPort;
       const parsedCreateMax = Number.parseInt(cfg.create_jobs_max_num, 10);
       if (Number.isFinite(parsedCreateMax) && parsedCreateMax > 0) createJobsMaxNum = parsedCreateMax;
+    }
+  } catch (_) {}
+  try {
+    const runtimeResp = await fetch(buildApiUrl('/api/frontend-runtime-config'));
+    if (runtimeResp.ok) {
+      const runtimePayload = await runtimeResp.json();
+      runtimeConfig = runtimePayload.config || {};
     }
   } catch (_) {}
   try {

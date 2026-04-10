@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "HAPS Job Console Bridge",
+  "version": "1.0.0",
+  "description": "Bridge web frontend to native host for terminal/fs/stage operations.",
+  "permissions": ["nativeMessaging"],
+  "host_permissions": [
+    "http://127.0.0.1/*",
+    "http://localhost/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://127.0.0.1/*",
+        "http://localhost/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ]
+}
