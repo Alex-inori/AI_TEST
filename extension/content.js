@@ -6,6 +6,10 @@
   window.addEventListener('message', async (event) => {
     if (event.source !== window) return;
     const data = event.data || {};
+    if (data.source === SOURCE_WEB && data.type === 'CFGSHELL_EXTENSION_PING') {
+      window.postMessage({ source: SOURCE_EXT, type: 'CFGSHELL_EXTENSION_READY' }, '*');
+      return;
+    }
     if (data.source !== SOURCE_WEB || data.type !== 'CFGSHELL_EXTENSION_REQUEST') return;
 
     const requestId = String(data.requestId || '');

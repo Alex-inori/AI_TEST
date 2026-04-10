@@ -25,6 +25,7 @@ const FRONTEND_STAGE_TIMEOUT_MS = 5 * 60 * 1000;
 const EXT_SOURCE_WEB = 'cfgshell-web';
 const EXT_SOURCE_BRIDGE = 'cfgshell-extension';
 let extensionBridgeReady = false;
+let extensionHandshakeTimer = null;
 
 function serviceBaseUrl() {
   return `http://127.0.0.1:${servicePort}`;
@@ -43,6 +44,7 @@ function hasChromeExtensionApi() {
 }
 function ensureExtensionReadyOrThrow(scene = 'operation') {
   if (!hasChromeExtensionApi()) {
+    requestExtensionBridgeHandshake();
     throw new Error(`Chrome extension bridge is required for ${scene}. Please install/enable extension + native host.`);
   }
 }
@@ -89,8 +91,16 @@ window.addEventListener('message', (event) => {
   if (msg.source !== EXT_SOURCE_BRIDGE) return;
   if (msg.type === 'CFGSHELL_EXTENSION_READY') {
     extensionBridgeReady = true;
+    if (extensionHandshakeTimer) {
+      window.clearInterval(extensionHandshakeTimer);
+      extensionHandshakeTimer = null;
+    }
   }
 });
+function requestExtensionBridgeHandshake() {
+  if (extensionBridgeReady) return;
+  window.postMessage({ source: EXT_SOURCE_WEB, type: 'CFGSHELL_EXTENSION_PING' }, '*');
+}
 function trimOldestCreateJobsIfNeeded(limit = createJobsMaxNum) {
   const max = Number.parseInt(limit, 10);
   if (!Number.isFinite(max) || max <= 0) return;
@@ -1178,6 +1188,12 @@ async function refreshRecentJobs() {
   renderRecentJobs(jobs);
 }
 async function bootstrap() {
+  requestExtensionBridgeHandshake();
+  if (!extensionHandshakeTimer) {
+    extensionHandshakeTimer = window.setInterval(() => {
+      requestExtensionBridgeHandshake();
+    }, 1500);
+  }
   try {
     const cfgResp = await fetch('/api/client-config');
     if (cfgResp.ok) {
