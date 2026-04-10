@@ -35,9 +35,17 @@ from pydantic import BaseModel, Field
 APP_ROOT = Path(__file__).resolve().parent
 CFGSHELL_CONFIG_FILE = APP_ROOT / "cfgshell.conf"
 UTILIZATION_LOG_FILE = APP_ROOT / "ultization.log"
+BACKEND_DEBUG_LOG_FILE = Path("/tmp/haps_backend_log.log")
 DEFAULT_SERVICE_PORT = 8000
 DEFAULT_CREATE_JOBS_MAX_NUM = 5
 DEFAULT_RECENT_JOBS_MAX_NUM = 10
+FRONTEND_STAGE_TIMEOUT_SECONDS = 5 * 60
+FRONTEND_STAGE_SEQUENCE = [
+    "Running::Loading HAPS_DB",
+    "Running::Loading SW_IMG",
+    "Running::Resetting HAPS_ENV",
+    "Running::HAPS_RDY",
+]
 REQUIRED_HAPS_SETTINGS = {
     "HAPS_CONFPROSH",
     "HAPS_DB_LOADING_TCL",
@@ -130,6 +138,27 @@ def load_terminal_path() -> str:
     return str(cfg_entries.get("TERMINAL") or "").strip()
 
 
+def append_backend_debug_log(message: str) -> None:
+    timestamp = datetime.now().isoformat(timespec="seconds")
+    try:
+        with BACKEND_DEBUG_LOG_FILE.open("a", encoding="utf-8") as handle:
+            handle.write(f"[{timestamp}] {message}\n")
+    except Exception:
+        return
+
+
+def build_frontend_stage_sequence(payload: dict[str, Any]) -> list[str]:
+    stages: list[str] = []
+    if bool(payload.get("database_path_enabled", False)):
+        stages.append("Running::Loading HAPS_DB")
+    if bool(payload.get("imgload_script_enabled", False)):
+        stages.append("Running::Loading SW_IMG")
+    if bool(payload.get("reset_script_enabled", False)):
+        stages.append("Running::Resetting HAPS_ENV")
+    stages.append("Running::HAPS_RDY")
+    return stages
+
+
 class OpenOcdCfgInput(BaseModel):
     tool_path: str = ""
     cfg_file: str = ""
@@ -152,10 +181,27 @@ class JobInput(BaseModel):
     duration_minutes: int = 0
     auto_finish: bool = True
     user_id: str = ""
+    frontend_validated: bool = False
+    # Backward compatibility for typo from older clients.
+    frontend_valided: bool = False
 
 
 class SubmitJobsRequest(BaseModel):
     jobs: list[JobInput] = Field(default_factory=list)
+
+
+class FrontendStageStartRequest(BaseModel):
+    stage: str = ""
+
+
+class FrontendStageCompleteRequest(BaseModel):
+    stage: str = ""
+    success: bool = True
+    message: str = ""
+
+
+class FrontendStageActionRequest(BaseModel):
+    force_refresh: bool = False
 
 
 @dataclass
@@ -551,7 +597,12 @@ class JobManager:
 
     def _start_job(self, payload: dict[str, Any]) -> JobRecord:
         now = datetime.now().isoformat(timespec="seconds")
-        initial_status = "Running::Loading HAPS_DB" if self._should_run_prepare(payload) else "Running::HAPS_RDY"
+        stage_sequence = build_frontend_stage_sequence(payload)
+        payload["frontend_stage_sequence"] = stage_sequence
+        payload["frontend_stage_index"] = 0
+        payload["frontend_stage_deadline"] = ""
+        payload["frontend_managed"] = True
+        initial_status = stage_sequence[0] if stage_sequence else "Running::HAPS_RDY"
         job = JobRecord(
             id=str(uuid.uuid4()),
             payload=payload,
@@ -568,6 +619,9 @@ class JobManager:
         return job
 
     def _launch_job_process_locked(self, job: JobRecord) -> None:
+        if bool((job.payload or {}).get("frontend_managed", False)):
+            job.process = None
+            return
         job.run_token += 1
         run_token = job.run_token
         threading.Thread(target=self._prepare_and_launch_job, args=(job.id, run_token), daemon=True).start()
@@ -1141,6 +1195,127 @@ class JobManager:
             self._promote_waiting_locked()
             return job
 
+    def start_frontend_stage(self, job_id: str, stage: str, user_id: str) -> JobRecord:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job:
+                raise KeyError(job_id)
+            payload = job.payload or {}
+            if str(payload.get("user_id") or "") != user_id:
+                raise PermissionError("can only update own running job")
+            if not bool(payload.get("frontend_managed", False)):
+                append_backend_debug_log(f"stage_action_denied job_id={job_id} reason=not_frontend_managed")
+                raise ValueError("job is not frontend managed")
+            sequence = [str(item) for item in list(payload.get("frontend_stage_sequence") or []) if str(item)]
+            index = int(payload.get("frontend_stage_index", 0) or 0)
+            if not sequence:
+                raise ValueError("empty frontend stage sequence")
+            if index >= len(sequence):
+                raise ValueError("frontend stages already finished")
+            expected = sequence[index]
+            if expected != stage:
+                raise ValueError(f"stage out of order, expected: {expected}")
+            payload["frontend_stage_deadline"] = (datetime.now() + timedelta(seconds=FRONTEND_STAGE_TIMEOUT_SECONDS)).isoformat(timespec="seconds")
+            job.status = stage
+            job.message = f"frontend stage started: {stage}"
+            return job
+
+    def get_frontend_stage_action(self, job_id: str, user_id: str, force_refresh: bool = False) -> dict[str, Any]:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job:
+                raise KeyError(job_id)
+            payload = job.payload or {}
+            if str(payload.get("user_id") or "") != user_id:
+                raise PermissionError("can only query own running job")
+            if not bool(payload.get("frontend_managed", False)):
+                raise ValueError("job is not frontend managed")
+            sequence = [str(item) for item in list(payload.get("frontend_stage_sequence") or []) if str(item)]
+            index = int(payload.get("frontend_stage_index", 0) or 0)
+            if not sequence or index >= len(sequence):
+                append_backend_debug_log(f"stage_action_done job_id={job_id} reason=sequence_completed")
+                return {"done": True, "stage": "Running::HAPS_RDY", "action": ""}
+            stage = sequence[index]
+            if stage == "Running::HAPS_RDY":
+                append_backend_debug_log(f"stage_action_done job_id={job_id} reason=already_haps_rdy")
+                return {"done": True, "stage": stage, "action": ""}
+
+            if force_refresh or not str(payload.get("frontend_stage_deadline") or "").strip():
+                payload["frontend_stage_deadline"] = (
+                    datetime.now() + timedelta(seconds=FRONTEND_STAGE_TIMEOUT_SECONDS)
+                ).isoformat(timespec="seconds")
+            job.status = stage
+            job.message = f"frontend action dispatched: {stage}"
+            append_backend_debug_log(f"stage_action_dispatched job_id={job_id} stage={stage} timeout={FRONTEND_STAGE_TIMEOUT_SECONDS}s")
+            return {
+                "done": False,
+                "stage": stage,
+                "action": "runStage",
+                "timeout_seconds": FRONTEND_STAGE_TIMEOUT_SECONDS,
+                "payload": payload,
+            }
+
+    def complete_frontend_stage(self, job_id: str, stage: str, success: bool, message: str, user_id: str) -> JobRecord:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job:
+                raise KeyError(job_id)
+            payload = job.payload or {}
+            if str(payload.get("user_id") or "") != user_id:
+                raise PermissionError("can only update own running job")
+            if not bool(payload.get("frontend_managed", False)):
+                append_backend_debug_log(f"stage_complete_denied job_id={job_id} stage={stage} reason=not_frontend_managed")
+                raise ValueError("job is not frontend managed")
+            if not self._is_running_status(job.status):
+                return job
+            deadline_text = str(payload.get("frontend_stage_deadline") or "").strip()
+            if deadline_text:
+                try:
+                    if datetime.now() > datetime.fromisoformat(deadline_text):
+                        job.status = "Failed"
+                        job.end_time = datetime.now().isoformat(timespec="seconds")
+                        job.message = "frontend stage timeout (>5 minutes)"
+                        append_backend_debug_log(f"stage_complete_failed job_id={job_id} stage={stage} reason=timeout")
+                        self._append_utilization_log(job)
+                        self._promote_waiting_locked()
+                        return job
+                except ValueError:
+                    pass
+
+            sequence = [str(item) for item in list(payload.get("frontend_stage_sequence") or []) if str(item)]
+            index = int(payload.get("frontend_stage_index", 0) or 0)
+            if not sequence or index >= len(sequence):
+                raise ValueError("invalid frontend stage sequence")
+            expected = sequence[index]
+            if expected != stage:
+                append_backend_debug_log(f"stage_complete_failed job_id={job_id} stage={stage} reason=out_of_order expected={expected}")
+                raise ValueError(f"stage out of order, expected: {expected}")
+
+            if not success:
+                job.status = "Failed"
+                job.end_time = datetime.now().isoformat(timespec="seconds")
+                job.message = message or f"frontend stage failed: {stage}"
+                append_backend_debug_log(
+                    f"stage_complete_failed job_id={job_id} stage={stage} reason=frontend_reported_failed detail={job.message}"
+                )
+                payload["frontend_stage_deadline"] = ""
+                self._append_utilization_log(job)
+                self._promote_waiting_locked()
+                return job
+
+            payload["frontend_stage_index"] = index + 1
+            payload["frontend_stage_deadline"] = ""
+            if index + 1 >= len(sequence):
+                job.status = "Running::HAPS_RDY"
+                job.message = message or "frontend stages completed"
+                append_backend_debug_log(f"stage_complete_success job_id={job_id} stage={stage} next=Running::HAPS_RDY")
+                return job
+            next_stage = sequence[index + 1]
+            job.status = next_stage
+            job.message = message or f"frontend stage completed: {stage}"
+            append_backend_debug_log(f"stage_complete_success job_id={job_id} stage={stage} next={next_stage}")
+            return job
+
     def confirm_stop(self, job_id: str, user_id: str) -> JobRecord:
         with self._lock:
             job = self._jobs.get(job_id)
@@ -1237,6 +1412,20 @@ class JobManager:
             if not job or not self._is_running_status(job.status):
                 continue
             payload = job.payload or {}
+            deadline_text = str(payload.get("frontend_stage_deadline") or "").strip()
+            if deadline_text:
+                try:
+                    deadline = datetime.fromisoformat(deadline_text)
+                    if now > deadline:
+                        job.status = "Failed"
+                        job.end_time = now.isoformat(timespec="seconds")
+                        job.message = "frontend stage timeout (>5 minutes)"
+                        payload["frontend_stage_deadline"] = ""
+                        self._append_utilization_log(job)
+                        self._promote_waiting_locked()
+                        continue
+                except ValueError:
+                    payload["frontend_stage_deadline"] = ""
             duration_minutes = self._duration_minutes(payload)
             if duration_minutes <= 0:
                 continue
@@ -1691,6 +1880,34 @@ def get_client_config() -> dict[str, int]:
     return load_ui_limits()
 
 
+@app.get("/api/frontend-runtime-config")
+def get_frontend_runtime_config() -> dict[str, Any]:
+    entries = _load_cfg_entries(required=False)
+    allowed_keys = [
+        "HAPS_CONFPROSH",
+        "HAPS_DB_LOADING_TCL",
+        "HAPS_PLATFORM",
+        "UART_DEVICE",
+        "UART_LOG_PATH",
+        "HAPS_RESET_TCL",
+        "HAPS_IMG_LOADING_TCL",
+        "HAPS_HMF_TXT",
+        "TERMINAL",
+        "CHROME_EXTENSION_ID",
+        "NATIVE_HOST_NAME",
+    ]
+    cfg: dict[str, Any] = {}
+    for key in allowed_keys:
+        value = entries.get(key)
+        if value is None:
+            continue
+        if key in {"HAPS_PLATFORM", "UART_DEVICE"}:
+            cfg[key] = _parse_cfg_list(value)
+        else:
+            cfg[key] = value
+    return {"config": cfg, "frontend_stage_timeout_seconds": FRONTEND_STAGE_TIMEOUT_SECONDS}
+
+
 
 
 @app.get("/api/directories")
@@ -1757,14 +1974,22 @@ def get_jobs(request: Request) -> dict[str, Any]:
 
 
 @app.get("/api/platform-options")
-def get_platform_options() -> dict[str, list[str]]:
+def get_platform_options() -> dict[str, Any]:
     try:
         settings = load_haps_settings()
     except ValueError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     platforms = [str(item).strip() for item in list(settings.get("HAPS_PLATFORM") or []) if str(item).strip()]
     uart_devices = [str(item).strip() for item in list(settings.get("UART_DEVICE") or []) if str(item).strip()]
-    return {"haps_platforms": platforms, "uart_devices": uart_devices}
+    return {
+        "haps_platforms": platforms,
+        "uart_devices": uart_devices,
+        "default_reset_script": str(settings.get("HAPS_RESET_TCL") or "").strip(),
+        "default_imgload_script": str(settings.get("HAPS_IMG_LOADING_TCL") or "").strip(),
+        "default_haps_hmf_txt": str(settings.get("HAPS_HMF_TXT") or "").strip(),
+        "default_uart_log_root": str(settings.get("UART_LOG_PATH") or "").strip(),
+        "terminal_path": load_terminal_path(),
+    }
 
 
 @app.post("/api/jobs")
@@ -1778,7 +2003,6 @@ def submit_jobs(payload: SubmitJobsRequest, request: Request) -> dict[str, Any]:
 
     created: list[dict[str, Any]] = []
     system_user = get_system_user_id(request)
-    used_uart_paths: set[str] = set()
     try:
         settings = load_haps_settings()
     except ValueError as exc:
@@ -1797,17 +2021,16 @@ def submit_jobs(payload: SubmitJobsRequest, request: Request) -> dict[str, Any]:
                 data["reset_script"] = str(settings.get("HAPS_RESET_TCL") or "").strip()
             if bool(data.get("imgload_script_enabled", False)) and not str(data.get("imgload_script") or "").strip():
                 data["imgload_script"] = str(settings.get("HAPS_IMG_LOADING_TCL") or "").strip()
-            data["log_path"] = build_default_log_path(
-                str(settings.get("UART_LOG_PATH") or ""),
-                data["user_id"],
-                data["jobs_id"],
-            )
-            if data["log_path"]:
-                Path(data["log_path"]).mkdir(parents=True, exist_ok=True)
+            if not bool(data.get("frontend_validated", False) or data.get("frontend_valided", False)):
+                raise ValueError("frontend_validated is required for submission")
+            if not str(data.get("log_path") or "").strip():
+                data["log_path"] = build_default_log_path(
+                    str(settings.get("UART_LOG_PATH") or ""),
+                    data["user_id"],
+                    data["jobs_id"],
+                )
             if "HAPS100" in str(data.get("haps_platform") or ""):
                 data["haps_hmf_txt"] = str(settings.get("HAPS_HMF_TXT") or "").strip()
-
-            validate_submit_payload(data, settings=settings, used_uart_paths=used_uart_paths)
             data["log_info"] = build_log_info(data.get("log_path", ""))
             result = manager.submit(data)
         except ValueError as exc:
@@ -1826,44 +2049,51 @@ def stop_job(job_id: str) -> dict[str, Any]:
     return manager._to_api(job)
 
 
-@app.post("/api/jobs/{job_id}/open-terminal")
-def open_job_terminal(job_id: str, request: Request) -> dict[str, Any]:
-    viewer_user_id = get_system_user_id(request)
-    all_jobs = manager.list_jobs(viewer_user_id=viewer_user_id)
-    target = next((job for job in all_jobs if str(job.get("id")) == str(job_id)), None)
-    if target is None:
-        raise HTTPException(status_code=404, detail="job not found")
-    payload = target.get("payload") or {}
-    if str(payload.get("user_id") or "") != str(viewer_user_id):
-        raise HTTPException(status_code=403, detail="only owner can open terminal")
-    if not manager._is_running_status(str(target.get("status") or "")):
-        raise HTTPException(status_code=400, detail="terminal can only be opened for running jobs")
-
-    terminal_path = load_terminal_path()
-    if not terminal_path:
-        raise HTTPException(status_code=400, detail="missing TERMINAL in cfgshell.conf")
-    if not Path(terminal_path).exists():
-        raise HTTPException(status_code=400, detail=f"terminal path not found: {terminal_path}")
-    if not os.access(terminal_path, os.X_OK):
-        raise HTTPException(status_code=400, detail=f"terminal path is not executable: {terminal_path}")
-
-    launch_cwd = str(payload.get("log_path") or "").strip() or str(Path.home())
-    if not Path(launch_cwd).exists():
-        launch_cwd = str(Path.home())
-
+@app.post("/api/jobs/{job_id}/frontend-stage/start")
+def start_frontend_stage(job_id: str, body: FrontendStageStartRequest, request: Request) -> dict[str, Any]:
+    user_id = get_system_user_id(request)
     try:
-        subprocess.Popen(  # noqa: S603
-            [terminal_path],  # noqa: S607
-            cwd=launch_cwd,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"failed to open terminal: {exc}") from exc
+        job = manager.start_frontend_stage(job_id, body.stage, user_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="job not found") from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return manager._to_api(job)
 
-    return {"ok": True}
+
+@app.post("/api/jobs/{job_id}/frontend-stage/action")
+def get_frontend_stage_action(job_id: str, body: FrontendStageActionRequest, request: Request) -> dict[str, Any]:
+    user_id = get_system_user_id(request)
+    try:
+        return manager.get_frontend_stage_action(job_id, user_id, force_refresh=body.force_refresh)
+    except KeyError as exc:
+        append_backend_debug_log(f"stage_action_error job_id={job_id} reason=job_not_found")
+        raise HTTPException(status_code=404, detail="job not found") from exc
+    except PermissionError as exc:
+        append_backend_debug_log(f"stage_action_error job_id={job_id} reason=permission detail={exc}")
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        append_backend_debug_log(f"stage_action_error job_id={job_id} reason=value_error detail={exc}")
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/jobs/{job_id}/frontend-stage/complete")
+def complete_frontend_stage(job_id: str, body: FrontendStageCompleteRequest, request: Request) -> dict[str, Any]:
+    user_id = get_system_user_id(request)
+    try:
+        job = manager.complete_frontend_stage(job_id, body.stage, body.success, body.message, user_id)
+    except KeyError as exc:
+        append_backend_debug_log(f"stage_complete_error job_id={job_id} stage={body.stage} reason=job_not_found")
+        raise HTTPException(status_code=404, detail="job not found") from exc
+    except PermissionError as exc:
+        append_backend_debug_log(f"stage_complete_error job_id={job_id} stage={body.stage} reason=permission detail={exc}")
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        append_backend_debug_log(f"stage_complete_error job_id={job_id} stage={body.stage} reason=value_error detail={exc}")
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return manager._to_api(job)
 
 
 @app.post("/api/jobs/{job_id}/confirm-stop")

@@ -112,6 +112,10 @@ pip install fastapi uvicorn pyserial
 2. 服务器防火墙是否放行 8000 端口；
 3. 访问的是正确的服务器 IP。
 
+### Q4: Frontend stage 提交后直接 Failed
+
+后端会将阶段调度与失败原因写入：`/tmp/haps_backend_log.log`，可先查看该文件定位具体失败阶段与错误详情。
+
 ---
 
 ## API
@@ -119,6 +123,8 @@ pip install fastapi uvicorn pyserial
 - `POST /api/jobs`：提交 jobs
 - `GET /api/jobs`：查询 recent jobs
 - `POST /api/jobs/{job_id}/stop`：停止运行中的 job
+- `POST /api/jobs/{job_id}/frontend-stage/action`：后端下发当前前端阶段 action
+- `POST /api/jobs/{job_id}/frontend-stage/complete`：前端回传阶段执行结果
 - `WS /ws/uart`：UART 实时流（按 Job + 设备输出）
 
 ## cfgshell.conf 可选配置
@@ -126,3 +132,32 @@ pip install fastapi uvicorn pyserial
 - `SERVICE_PORT`：前端请求后端服务端口。未配置时默认使用 `127.0.0.1:8000`。
 - `CREATE_JOBS_MAX_NUM`：New Jobs 页面允许创建/提交的最大 Job 数量。未配置时默认 `5`。
 - `RECENT_JOBS_MAX_NUM`：Recent Jobs 最多保留显示条数。未配置时默认 `10`。
+- `CHROME_EXTENSION_ID`：Chrome 扩展 ID（前端通过后端下发后使用）。
+- `NATIVE_HOST_NAME`：Native host 名称（默认 `com.haps.job_console_host`）。
+
+## Chrome Extension + Native Host（新增）
+
+仓库中已提供可运行骨架：
+
+- 扩展目录：`extension/`（`manifest.json`、`background.js`、`content.js`）
+- Native Host：`native_host/host.py`
+- Native Host manifest 模板：`native_host/com.haps.job_console_host.json`
+
+### 安装步骤（本机）
+
+1. 在 Chrome 打开 `chrome://extensions`，启用开发者模式，加载 `extension/` 目录。
+2. 记录扩展 ID，填到 `cfgshell.conf` 的 `CHROME_EXTENSION_ID`。
+3. 修改 `native_host/com.haps.job_console_host.json`：
+   - `path` 改为 `host.py` 的绝对路径；
+   - `allowed_origins` 改为你的扩展 ID。
+4. 按系统规范注册 native host manifest（Linux 通常放到 `~/.config/google-chrome/NativeMessagingHosts/`）。
+5. 重启 Chrome 页面后，前端会通过 content-script bridge -> extension -> native host 执行：
+   - `openTerminal`
+   - `validatePath`
+   - `ensureDirectory`
+   - `appendFile`
+   - `listFs`（前端用户目录浏览）
+   - `runStage`
+
+> 注意：CreateJobs 的目录浏览、路径校验、日志目录创建已强制走前端 extension/native-host，
+> 不再回退后端 `/api/fs`，以避免后端 app 用户权限导致的 `Permission denied` 校验误差。
