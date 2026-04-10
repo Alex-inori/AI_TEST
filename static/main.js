@@ -588,6 +588,10 @@ async function loadFsEntriesWithFallback(path, mode) {
   }
 }
 async function loadFsEntries(path, mode) {
+  if (hasChromeExtensionApi()) {
+    const result = await callExtension('listFs', { path: path || '', mode });
+    return result || {};
+  }
   const url = buildApiUrl(`/api/fs?path=${encodeURIComponent(path || '')}&mode=${encodeURIComponent(mode)}`);
   const response = await fetch(url);
   if (!response.ok) {

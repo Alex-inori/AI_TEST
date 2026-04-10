@@ -92,6 +92,23 @@ def _run_stage(stage: str, payload: dict[str, Any]) -> dict[str, Any]:
     return {"stage": stage, "jobs_id": payload.get("jobs_id", "")}
 
 
+def _list_fs(path_text: str, mode: str = "file") -> dict[str, Any]:
+    target = Path(path_text).expanduser() if str(path_text or "").strip() else Path.home()
+    resolved = target.resolve()
+    if not resolved.exists() or not resolved.is_dir():
+        raise ValueError(f"path is not a directory: {resolved}")
+    entries: list[dict[str, str]] = []
+    for entry in sorted(resolved.iterdir(), key=lambda item: (not item.is_dir(), item.name.lower())):
+        if entry.is_dir():
+            entries.append({"name": entry.name, "path": str(entry), "type": "directory"})
+        elif mode == "file" and entry.is_file():
+            entries.append({"name": entry.name, "path": str(entry), "type": "file"})
+        if len(entries) >= 200:
+            break
+    parent = str(resolved.parent) if resolved.parent != resolved else ""
+    return {"cwd": str(resolved), "parent": parent, "mode": mode, "entries": entries}
+
+
 def _handle(message: dict[str, Any]) -> dict[str, Any]:
     action = str(message.get("action") or "")
     payload = message.get("payload") or {}
@@ -112,6 +129,8 @@ def _handle(message: dict[str, Any]) -> dict[str, Any]:
         return _open_terminal(str(payload.get("terminalPath") or ""), str(payload.get("cwd") or ""))
     if action == "runStage":
         return _run_stage(str(payload.get("stage") or ""), payload.get("payload") or {})
+    if action == "listFs":
+        return _list_fs(str(payload.get("path") or ""), str(payload.get("mode") or "file"))
 
     raise ValueError(f"unsupported action: {action}")
 

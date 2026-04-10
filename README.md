@@ -150,4 +150,5 @@ pip install fastapi uvicorn pyserial
    - `validatePath`
    - `ensureDirectory`
    - `appendFile`
+   - `listFs`（前端用户目录浏览）
    - `runStage`
