@@ -111,9 +111,10 @@ async function validateLocalPath(path, type) {
 async function ensureLogDirectory(path) {
   const bridge = window.CfgShellExtension;
   if (!bridge || typeof bridge.ensureLogDirectory !== 'function') {
-    throw new Error('Chrome extension unavailable: cannot create log directory.');
+    return false;
   }
   await bridge.ensureLogDirectory({ path, writable: true });
+  return true;
 }
 function trimOldestCreateJobsIfNeeded(limit = createJobsMaxNum) {
   const max = Number.parseInt(limit, 10);
@@ -839,7 +840,7 @@ function collectNewJobs() {
       auto_finish: autoFinishEnabled.checked,
       user_id: currentUserId,
       log_path: logPath,
-      execution_mode: "extension",
+      execution_mode: extensionBridgeReady ? "extension" : "",
     };
   });
 }
@@ -887,12 +888,20 @@ async function validateJobsBeforeSubmit(jobs) {
     if (job.reset_script_enabled && job.reset_script) await validateLocalPath(job.reset_script, 'file');
     if (job.imgload_script_enabled && job.imgload_script) await validateLocalPath(job.imgload_script, 'file');
     if (job.imgload_script_enabled && job.img_file) await validateLocalPath(job.img_file, 'file');
-    if (job.log_path) await ensureLogDirectory(job.log_path);
+    if (job.log_path) {
+      const created = await ensureLogDirectory(job.log_path);
+      if (!created && String(job.execution_mode || '') === 'extension') {
+        throw new Error('Chrome extension unavailable: cannot create directory.');
+      }
+    }
   }
 }
 async function submitJobs(event) {
   event.preventDefault();
   const jobs = collectNewJobs();
+  if (!extensionBridgeReady) {
+    console.warn('Chrome extension bridge not ready, fallback to backend mode.');
+  }
   try {
     await validateJobsBeforeSubmit(jobs);
   } catch (err) {

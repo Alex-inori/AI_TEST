@@ -1,7 +1,7 @@
 {
   "name": "com.cfgshell.native_host",
   "description": "CfgShell Native Messaging Host",
-  "path": "/ABSOLUTE/PATH/TO/chrome_extension/native_host.py",
+  "path": "/ABSOLUTE/PATH/TO/native_host/native_host.py",
   "type": "stdio",
   "allowed_origins": [
     "chrome-extension://<YOUR_EXTENSION_ID>/"

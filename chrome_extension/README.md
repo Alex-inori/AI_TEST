@@ -12,9 +12,11 @@ This extension injects `window.CfgShellExtension` into the frontend page and for
 
 ## Python native-host implementation
 
-- `native_host.py` provides a production-ready stdio native messaging host in Python.
+- Python native-host files are archived under `../native_host/`:
+  - `../native_host/native_host.py`
+  - `../native_host/native_host_manifest.json`
 - `native_host_manifest.json` is a template manifest. Replace:
-  - `path` with absolute path to `native_host.py`
+  - `path` with absolute path to `../native_host/native_host.py`
   - `allowed_origins` with your extension ID.
 
 ### Supported actions
