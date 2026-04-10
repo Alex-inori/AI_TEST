@@ -641,6 +641,8 @@ class JobManager:
 
     @staticmethod
     def _should_run_prepare(payload: dict[str, Any]) -> bool:
+        if bool(payload.get("frontend_prepare_completed", False)):
+            return False
         db_enabled = bool(payload.get("database_path_enabled", False))
         reset_enabled = bool(payload.get("reset_script_enabled", False))
         database_path = str(payload.get("database_path") or "").strip()
@@ -1306,9 +1308,14 @@ class JobManager:
             payload["frontend_stage_index"] = index + 1
             payload["frontend_stage_deadline"] = ""
             if index + 1 >= len(sequence):
-                job.status = "Running::HAPS_RDY"
-                job.message = message or "frontend stages completed"
-                append_backend_debug_log(f"stage_complete_success job_id={job_id} stage={stage} next=Running::HAPS_RDY")
+                payload["frontend_prepare_completed"] = True
+                payload["frontend_managed"] = False
+                job.status = "Running::Loading HAPS"
+                job.message = message or "frontend stages completed, backend locking HAPS"
+                append_backend_debug_log(
+                    f"stage_complete_success job_id={job_id} stage={stage} next=Running::Loading HAPS backend_lock=enabled"
+                )
+                self._launch_job_process_locked(job)
                 return job
             next_stage = sequence[index + 1]
             job.status = next_stage
