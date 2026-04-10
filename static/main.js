@@ -24,6 +24,7 @@ let runtimeConfig = {};
 const FRONTEND_STAGE_TIMEOUT_MS = 5 * 60 * 1000;
 const EXT_SOURCE_WEB = 'cfgshell-web';
 const EXT_SOURCE_BRIDGE = 'cfgshell-extension';
+let extensionBridgeReady = false;
 
 function serviceBaseUrl() {
   return `http://127.0.0.1:${servicePort}`;
@@ -38,7 +39,7 @@ function getExtensionId() {
   return String(runtimeConfig.CHROME_EXTENSION_ID || '').trim();
 }
 function hasChromeExtensionApi() {
-  return true;
+  return extensionBridgeReady;
 }
 function callExtension(action, payload = {}, timeoutMs = 10000) {
   return new Promise((resolve, reject) => {
@@ -62,6 +63,10 @@ function callExtension(action, payload = {}, timeoutMs = 10000) {
       if (!msg.ok) return reject(new Error(msg.error || 'Extension call failed.'));
       resolve(msg.data || {});
     };
+    const normalizedPayload = {
+      ...payload,
+      nativeHostName: String(runtimeConfig.NATIVE_HOST_NAME || '').trim() || undefined,
+    };
     window.addEventListener('message', onMessage);
     window.postMessage({
       source: EXT_SOURCE_WEB,
@@ -69,10 +74,18 @@ function callExtension(action, payload = {}, timeoutMs = 10000) {
       requestId,
       extensionId: getExtensionId(),
       action,
-      payload,
+      payload: normalizedPayload,
     }, '*');
   });
 }
+window.addEventListener('message', (event) => {
+  if (event.source !== window) return;
+  const msg = event.data || {};
+  if (msg.source !== EXT_SOURCE_BRIDGE) return;
+  if (msg.type === 'CFGSHELL_EXTENSION_READY') {
+    extensionBridgeReady = true;
+  }
+});
 function trimOldestCreateJobsIfNeeded(limit = createJobsMaxNum) {
   const max = Number.parseInt(limit, 10);
   if (!Number.isFinite(max) || max <= 0) return;
