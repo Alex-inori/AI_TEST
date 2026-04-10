@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import stat
 import subprocess
 import sys
@@ -120,9 +121,54 @@ def _run_stage(stage: str, payload: dict[str, Any]) -> dict[str, Any]:
         _log(f"[{stage}] verified reset script: {reset_script}")
 
     confprosh = str(runtime_cfg.get("HAPS_CONFPROSH") or "").strip()
-    if confprosh:
-        _log(f"[{stage}] runtime HAPS_CONFPROSH available: {confprosh}")
-    time.sleep(0.1)
+    if not confprosh:
+        _log(f"[{stage}] skip command execution because HAPS_CONFPROSH is empty")
+        time.sleep(0.1)
+    else:
+        confprosh_cmd = shlex.split(confprosh)
+        if not confprosh_cmd:
+            raise ValueError("invalid HAPS_CONFPROSH command")
+
+        stage_cmd: list[str]
+        if stage == "Running::Loading HAPS_DB":
+            db_load_script = str(runtime_cfg.get("HAPS_DB_LOADING_TCL") or "").strip()
+            database_path = str((job_payload.get("database_path") if isinstance(job_payload, dict) else "") or "").strip()
+            haps_platform = str((job_payload.get("haps_platform") if isinstance(job_payload, dict) else "") or "").strip()
+            hmf_txt = str((job_payload.get("haps_hmf_txt") if isinstance(job_payload, dict) else "") or "").strip()
+            if not db_load_script:
+                raise ValueError("HAPS_DB_LOADING_TCL missing for Loading HAPS_DB")
+            stage_cmd = [*confprosh_cmd, db_load_script, database_path]
+            if "HAPS100" in haps_platform and hmf_txt:
+                stage_cmd.append(hmf_txt)
+        elif stage == "Running::Loading SW_IMG":
+            imgload_script = str((job_payload.get("imgload_script") if isinstance(job_payload, dict) else "") or "").strip()
+            img_file = str((job_payload.get("img_file") if isinstance(job_payload, dict) else "") or "").strip()
+            if not imgload_script:
+                raise ValueError("imgload_script missing for Loading SW_IMG")
+            stage_cmd = [*confprosh_cmd, imgload_script, img_file]
+        elif stage == "Running::Resetting HAPS_ENV":
+            reset_script = str((job_payload.get("reset_script") if isinstance(job_payload, dict) else "") or "").strip()
+            stage_cmd = [*confprosh_cmd, reset_script]
+        else:
+            stage_cmd = []
+
+        if stage_cmd:
+            _log(f"[{stage}] executing command: {' '.join(stage_cmd)}")
+            proc = subprocess.run(
+                stage_cmd,
+                text=True,
+                capture_output=True,
+            )
+            if proc.stdout.strip():
+                _log(f"[{stage}] stdout: {proc.stdout.strip()}")
+            if proc.stderr.strip():
+                _log(f"[{stage}] stderr: {proc.stderr.strip()}")
+            if proc.returncode != 0:
+                raise RuntimeError(f"{stage} failed, exit={proc.returncode}")
+            _log(f"[{stage}] command completed with exit=0")
+        else:
+            time.sleep(0.1)
+
     jobs_id = job_payload.get("jobs_id", "") if isinstance(job_payload, dict) else ""
     return {"stage": stage, "jobs_id": jobs_id}
 
