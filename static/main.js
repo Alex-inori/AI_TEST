@@ -111,7 +111,7 @@ async function validateLocalPath(path, type) {
 async function ensureLogDirectory(path) {
   const bridge = window.CfgShellExtension;
   if (!bridge || typeof bridge.ensureLogDirectory !== 'function') {
-    return false;
+    throw new Error('Chrome extension unavailable: cannot create directory.');
   }
   await bridge.ensureLogDirectory({ path, writable: true });
   return true;
@@ -619,16 +619,10 @@ async function loadFsEntriesWithFallback(path, mode) {
 }
 async function loadFsEntries(path, mode) {
   const bridge = window.CfgShellExtension;
-  if (bridge && typeof bridge.listDirectory === 'function') {
-    return bridge.listDirectory({ path: path || '', mode });
+  if (!bridge || typeof bridge.listDirectory !== 'function') {
+    throw new Error('Chrome extension unavailable: cannot browse local filesystem.');
   }
-  const url = buildApiUrl(`/api/fs?path=${encodeURIComponent(path || '')}&mode=${encodeURIComponent(mode)}`);
-  const response = await fetch(url);
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(text || 'load failed');
-  }
-  return response.json();
+  return bridge.listDirectory({ path: path || '', mode });
 }
 async function browseViaFileSystem(target, mode = 'file') {
   const modal = ensureFileBrowserModal();
@@ -840,7 +834,7 @@ function collectNewJobs() {
       auto_finish: autoFinishEnabled.checked,
       user_id: currentUserId,
       log_path: logPath,
-      execution_mode: extensionBridgeReady ? "extension" : "",
+      execution_mode: "extension",
     };
   });
 }
@@ -889,19 +883,14 @@ async function validateJobsBeforeSubmit(jobs) {
     if (job.imgload_script_enabled && job.imgload_script) await validateLocalPath(job.imgload_script, 'file');
     if (job.imgload_script_enabled && job.img_file) await validateLocalPath(job.img_file, 'file');
     if (job.log_path) {
-      const created = await ensureLogDirectory(job.log_path);
-      if (!created && String(job.execution_mode || '') === 'extension') {
-        throw new Error('Chrome extension unavailable: cannot create directory.');
-      }
+      await ensureLogDirectory(job.log_path);
     }
   }
 }
 async function submitJobs(event) {
   event.preventDefault();
   const jobs = collectNewJobs();
-  if (!extensionBridgeReady) {
-    console.warn('Chrome extension bridge not ready, fallback to backend mode.');
-  }
+  if (!extensionBridgeReady) return alert('Chrome extension unavailable: extension mode is required.');
   try {
     await validateJobsBeforeSubmit(jobs);
   } catch (err) {

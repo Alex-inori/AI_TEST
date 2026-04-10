@@ -900,117 +900,10 @@ class JobManager:
             lock_settings = self._read_haps_settings()
             lock_cfgshell_cmd = list(lock_settings.get("HAPS_CONFPROSH_CMD") or [])
 
-            if is_extension_mode:
-                if not self._run_frontend_prepare_stages(job_id, run_token, payload, log_file):
-                    return
-            elif self._should_run_prepare(payload):
-                settings = lock_settings or self._read_haps_settings()
-                cfgshell_cmd = lock_cfgshell_cmd or list(settings.get("HAPS_CONFPROSH_CMD") or [])
-                db_load_script = str(settings.get("HAPS_DB_LOADING_TCL") or "").strip()
-                database_path = str(payload.get("database_path") or "").strip()
-                reset_script = str(payload.get("reset_script") or "").strip()
-                haps_platform = str(payload.get("haps_platform") or "").strip()
-                hmf_txt = str(payload.get("haps_hmf_txt") or "").strip()
-                ran_imgload = False
-
-                with self._lock:
-                    if not self._job_is_current_locked(job_id, run_token):
-                        return
-                    self._jobs[job_id].status = "Running::Loading HAPS_DB"
-
-                db_load_cmd = [*cfgshell_cmd, db_load_script, database_path]
-                if "HAPS100" in haps_platform:
-                    db_load_cmd.append(hmf_txt)
-                self._log_stage_timestamp(log_file, "load_db", "start")
-                rc1 = subprocess.run(db_load_cmd, stdout=log_file, stderr=log_file, text=True).returncode
-                self._log_stage_timestamp(log_file, "load_db", "end")
-                if rc1 != 0:
-                    self._write_process_log(log_file, f"[HAPS_LOCK] HAPS_DB load failed, exit={rc1}")
-                    with self._lock:
-                        if self._job_is_current_locked(job_id, run_token):
-                            self._jobs[job_id].status = "Failed"
-                            self._jobs[job_id].end_time = datetime.now().isoformat(timespec="seconds")
-                            self._jobs[job_id].message = f"HAPS_DB load failed (exit={rc1})"
-                            self._append_utilization_log(self._jobs[job_id])
-                            self._promote_waiting_locked()
-                    return
-
-                if self._should_run_imgload(payload):
-                    imgload_script = str(payload.get("imgload_script") or "").strip()
-                    img_file = str(payload.get("img_file") or "").strip()
-                    jobs_id = str(payload.get("jobs_id") or job_id)
-                    duration_minutes = self._duration_minutes(payload)
-                    if not self._wait_prepare_delay(job_id, run_token, self.PREPARE_DB_TO_IMG_DELAY_SECONDS):
-                        return
-                    with self._lock:
-                        if not self._job_is_current_locked(job_id, run_token):
-                            return
-                        self._jobs[job_id].status = "Running::Loading SW_IMG"
-
-                    dedup_result: dict[str, str] = {}
-                    dedup_error: dict[str, str] = {}
-
-                    def _collect_img_signature() -> None:
-                        try:
-                            algo, signature = self._calculate_img_dedup_signature(img_file)
-                            dedup_result["algo"] = algo
-                            dedup_result["signature"] = signature
-                        except Exception as exc:
-                            dedup_error["value"] = str(exc)
-
-                    dedup_thread = threading.Thread(target=_collect_img_signature, daemon=True)
-                    dedup_thread.start()
-                    self._log_stage_timestamp(log_file, "load_img", "start")
-                    rc_img = subprocess.run([*cfgshell_cmd, imgload_script, img_file], stdout=log_file, stderr=log_file, text=True).returncode
-                    self._log_stage_timestamp(log_file, "load_img", "end")
-                    dedup_thread.join()
-                    if "signature" in dedup_result:
-                        signature = dedup_result["signature"]
-                        with self._lock:
-                            duplicate = signature in self._img_dedup_signatures
-                            if not duplicate:
-                                self._img_dedup_signatures.add(signature)
-                        dedup_text = "file is remain unchanged" if duplicate else "file is new"
-                        self._write_process_log(
-                            log_file,
-                            f"[HAPS_LOCK] SW_IMG_CHECK algo={dedup_result['algo']} signature={signature} {dedup_text}: {img_file}",
-                        )
-                    elif "value" in dedup_error:
-                        self._write_process_log(log_file, f"[HAPS_LOCK] SW_IMG_CHECK failed: {dedup_error['value']}")
-                    if rc_img != 0:
-                        self._write_process_log(log_file, f"[HAPS_LOCK] SW_IMG load failed, exit={rc_img}")
-                        with self._lock:
-                            if self._job_is_current_locked(job_id, run_token):
-                                self._jobs[job_id].status = "Failed"
-                                self._jobs[job_id].end_time = datetime.now().isoformat(timespec="seconds")
-                                self._jobs[job_id].message = f"SW_IMG load failed (exit={rc_img})"
-                                self._append_utilization_log(self._jobs[job_id])
-                                self._promote_waiting_locked()
-                        return
-                    ran_imgload = True
-
-                with self._lock:
-                    if not self._job_is_current_locked(job_id, run_token):
-                        return
-                    self._jobs[job_id].status = "Running::Resetting HAPS_ENV"
-
-                prepare_delay = self._prepare_reset_delay_seconds(ran_imgload)
-                if not self._wait_prepare_delay(job_id, run_token, prepare_delay):
-                    return
-
-                self._log_stage_timestamp(log_file, "reset", "start")
-                rc2 = subprocess.run([*cfgshell_cmd, reset_script], stdout=log_file, stderr=log_file, text=True).returncode
-                self._log_stage_timestamp(log_file, "reset", "end")
-                if rc2 != 0:
-                    self._write_process_log(log_file, f"[HAPS_LOCK] HAPS_ENV reset failed, exit={rc2}")
-                    with self._lock:
-                        if self._job_is_current_locked(job_id, run_token):
-                            self._jobs[job_id].status = "Failed"
-                            self._jobs[job_id].end_time = datetime.now().isoformat(timespec="seconds")
-                            self._jobs[job_id].message = f"HAPS_ENV reset failed (exit={rc2})"
-                            self._append_utilization_log(self._jobs[job_id])
-                            self._promote_waiting_locked()
-                    return
+            if not is_extension_mode:
+                raise RuntimeError("only extension execution mode is supported")
+            if not self._run_frontend_prepare_stages(job_id, run_token, payload, log_file):
+                return
 
             with self._lock:
                 if not self._job_is_current_locked(job_id, run_token):
@@ -1882,6 +1775,8 @@ def submit_jobs(payload: SubmitJobsRequest, request: Request) -> dict[str, Any]:
         try:
             data["user_id"] = system_user
             is_extension_mode = str(data.get("execution_mode") or "").strip().lower() == "extension"
+            if not is_extension_mode:
+                raise ValueError("only extension execution mode is supported")
             if not str(data.get("haps_platform") or "").strip():
                 data["haps_platform"] = default_platform
             data["jobs_id"] = build_jobs_id(data.get("jobs_id", ""), data["user_id"])
@@ -1889,19 +1784,15 @@ def submit_jobs(payload: SubmitJobsRequest, request: Request) -> dict[str, Any]:
                 data["reset_script"] = str(settings.get("HAPS_RESET_TCL") or "").strip()
             if bool(data.get("imgload_script_enabled", False)) and not str(data.get("imgload_script") or "").strip():
                 data["imgload_script"] = str(settings.get("HAPS_IMG_LOADING_TCL") or "").strip()
-            if not is_extension_mode:
-                data["log_path"] = build_default_log_path(
-                    str(settings.get("UART_LOG_PATH") or ""),
-                    data["user_id"],
-                    data["jobs_id"],
-                )
+            data["log_path"] = str(data.get("log_path") or "").strip()
             if "HAPS100" in str(data.get("haps_platform") or ""):
                 data["haps_hmf_txt"] = str(settings.get("HAPS_HMF_TXT") or "").strip()
-
-            if not is_extension_mode:
-                if data["log_path"]:
-                    Path(data["log_path"]).mkdir(parents=True, exist_ok=True)
-                validate_submit_payload(data, settings=settings, used_uart_paths=used_uart_paths)
+            if data.get("uart_paths"):
+                normalized = [str(p).strip() for p in list(data.get("uart_paths") or []) if str(p).strip()]
+                duplicated_across_jobs = sorted(path for path in normalized if path in used_uart_paths)
+                if duplicated_across_jobs:
+                    raise ValueError(f"duplicate UART path across submitted jobs: {duplicated_across_jobs[0]}")
+                used_uart_paths.update(normalized)
             data["log_info"] = build_log_info(data.get("log_path", ""))
             result = manager.submit(data)
         except ValueError as exc:
