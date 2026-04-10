@@ -24,6 +24,23 @@ let stageTimeoutSeconds = 300;
 let extensionBridgeReady = false;
 let frontendDefaults = {};
 const stageInFlight = new Set();
+function hasExtensionBridge() {
+  const bridge = window.CfgShellExtension;
+  return !!(bridge
+    && typeof bridge.runJobStage === 'function'
+    && typeof bridge.openNativeTerminal === 'function'
+    && typeof bridge.ensureLogDirectory === 'function'
+    && typeof bridge.listDirectory === 'function');
+}
+async function waitForExtensionBridge(timeoutMs = 1500) {
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  while (Date.now() < deadline) {
+    if (hasExtensionBridge()) return true;
+    // eslint-disable-next-line no-await-in-loop
+    await new Promise((resolve) => window.setTimeout(resolve, 100));
+  }
+  return hasExtensionBridge();
+}
 
 function serviceBaseUrl() {
   return `http://127.0.0.1:${servicePort}`;
@@ -70,6 +87,7 @@ async function runFrontendStage(jobId, stage, job) {
   });
 }
 async function driveFrontendStages(jobs) {
+  extensionBridgeReady = hasExtensionBridge();
   if (!extensionBridgeReady) return;
   for (const job of jobs || []) {
     const payload = job.payload || {};
@@ -889,8 +907,14 @@ async function validateJobsBeforeSubmit(jobs) {
 }
 async function submitJobs(event) {
   event.preventDefault();
+  extensionBridgeReady = hasExtensionBridge();
+  if (!extensionBridgeReady) {
+    extensionBridgeReady = await waitForExtensionBridge(1800);
+  }
   const jobs = collectNewJobs();
-  if (!extensionBridgeReady) return alert('Chrome extension unavailable: extension mode is required.');
+  if (!extensionBridgeReady) {
+    return alert('Chrome extension unavailable: extension mode is required. Please enable extension and refresh page.');
+  }
   try {
     await validateJobsBeforeSubmit(jobs);
   } catch (err) {
@@ -1171,7 +1195,7 @@ async function bootstrap() {
       const parsedStageTimeout = Number.parseInt(cfg.stage_timeout_seconds, 10);
       if (Number.isFinite(parsedStageTimeout) && parsedStageTimeout > 0) stageTimeoutSeconds = parsedStageTimeout;
       frontendDefaults = cfg.defaults || {};
-      extensionBridgeReady = !!(window.CfgShellExtension && typeof window.CfgShellExtension.runJobStage === 'function');
+      extensionBridgeReady = hasExtensionBridge();
     }
   } catch (_) {}
   try {
@@ -1205,6 +1229,7 @@ async function bootstrap() {
   }
   initJobsTimingSettings();
   createNewJobCard();
+  extensionBridgeReady = hasExtensionBridge();
   connectUartSocket();
   refreshRecentJobs();
   refreshWaitingJobs();
