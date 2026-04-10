@@ -1385,7 +1385,8 @@ class JobManager:
 
             payload["frontend_stage_index"] = index + 1
             payload["frontend_stage_deadline"] = ""
-            if index + 1 >= len(sequence):
+            reached_haps_rdy = (index + 1) >= len(sequence) or sequence[index + 1] == "Running::HAPS_RDY"
+            if reached_haps_rdy:
                 payload["frontend_prepare_completed"] = True
                 payload["frontend_managed"] = False
                 job.status = "Running::Loading HAPS"
