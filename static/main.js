@@ -79,7 +79,6 @@ function callExtension(action, payload = {}, timeoutMs = 10000) {
       source: EXT_SOURCE_WEB,
       type: 'CFGSHELL_EXTENSION_REQUEST',
       requestId,
-      extensionId: getExtensionId(),
       action,
       payload: normalizedPayload,
     }, '*');
