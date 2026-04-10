@@ -26,6 +26,7 @@ const EXT_SOURCE_WEB = 'cfgshell-web';
 const EXT_SOURCE_BRIDGE = 'cfgshell-extension';
 let extensionBridgeReady = false;
 let extensionHandshakeTimer = null;
+const stageExecutionInFlight = new Set();
 
 function serviceBaseUrl() {
   return `http://127.0.0.1:${servicePort}`;
@@ -893,7 +894,10 @@ async function submitJobs(event) {
   const result = await response.json();
   const createdJobs = Array.isArray(result.created) ? result.created : [];
   for (const created of createdJobs) {
-    executeFrontendStages(created).catch((error) => {
+    if (String(created?.type || '') !== 'running') continue;
+    const createdJob = created?.job || {};
+    if (!createdJob.id) continue;
+    executeFrontendStages(createdJob).catch((error) => {
       console.error(error);
     });
   }
@@ -904,9 +908,14 @@ async function submitJobs(event) {
   refreshWaitingJobs();
 }
 async function executeFrontendStages(job) {
+  const jobId = String(job?.id || '');
+  if (!jobId) return;
+  if (stageExecutionInFlight.has(jobId)) return;
+  stageExecutionInFlight.add(jobId);
+  try {
   ensureExtensionReadyOrThrow('frontend stage execution');
   while (true) {
-    const actionResp = await fetch(buildApiUrl(`/api/jobs/${job.id}/frontend-stage/action`), {
+    const actionResp = await fetch(buildApiUrl(`/api/jobs/${jobId}/frontend-stage/action`), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ force_refresh: false }),
@@ -922,7 +931,7 @@ async function executeFrontendStages(job) {
     try {
       await callExtension(
         'runStage',
-        { stage, job_id: job.id, payload: stagePayload, runtime_config: runtimeConfig },
+        { stage, job_id: jobId, payload: stagePayload, runtime_config: runtimeConfig },
         Number(actionData.timeout_seconds || 300) * 1000,
       );
     } catch (error) {
@@ -933,7 +942,7 @@ async function executeFrontendStages(job) {
       success = false;
       stageMessage = `${stage} timeout after 5 minutes`;
     }
-    const completeResp = await fetch(buildApiUrl(`/api/jobs/${job.id}/frontend-stage/complete`), {
+    const completeResp = await fetch(buildApiUrl(`/api/jobs/${jobId}/frontend-stage/complete`), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ stage, success, message: stageMessage }),
@@ -943,6 +952,9 @@ async function executeFrontendStages(job) {
   }
   refreshRecentJobs();
   refreshWaitingJobs();
+  } finally {
+    stageExecutionInFlight.delete(jobId);
+  }
 }
 async function finishJob(jobId) {
   if (!window.confirm('Finish this running job?')) return;
@@ -1176,6 +1188,14 @@ async function refreshRecentJobs() {
   if (!response.ok) return;
   const data = await response.json();
   const jobs = data.jobs || [];
+  jobs.forEach((job) => {
+    const payload = job && job.payload ? job.payload : {};
+    if (!isRunningStatus(job.status)) return;
+    if (!payload.frontend_managed) return;
+    if (String(payload.user_id || '') !== String(currentUserId || '')) return;
+    if (String(job.status || '') === 'Running::HAPS_RDY') return;
+    executeFrontendStages(job).catch((error) => console.error(error));
+  });
   const runningIds = new Set(jobs.filter((job) => isRunningStatus(job.status)).map((job) => job.id));
   Array.from(promptedTimeoutConfirmJobs).forEach((jobId) => {
     if (!runningIds.has(jobId)) promptedTimeoutConfirmJobs.delete(jobId);
