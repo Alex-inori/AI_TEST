@@ -171,6 +171,9 @@ class JobInput(BaseModel):
     duration_minutes: int = 0
     auto_finish: bool = True
     user_id: str = ""
+    frontend_validated: bool = False
+    # Backward compatibility for typo from older clients.
+    frontend_valided: bool = False
 
 
 class SubmitJobsRequest(BaseModel):
@@ -1960,7 +1963,7 @@ def submit_jobs(payload: SubmitJobsRequest, request: Request) -> dict[str, Any]:
                 data["reset_script"] = str(settings.get("HAPS_RESET_TCL") or "").strip()
             if bool(data.get("imgload_script_enabled", False)) and not str(data.get("imgload_script") or "").strip():
                 data["imgload_script"] = str(settings.get("HAPS_IMG_LOADING_TCL") or "").strip()
-            if not bool(data.get("frontend_validated", False)):
+            if not bool(data.get("frontend_validated", False) or data.get("frontend_valided", False)):
                 raise ValueError("frontend_validated is required for submission")
             if not str(data.get("log_path") or "").strip():
                 data["log_path"] = build_default_log_path(
