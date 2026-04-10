@@ -41,6 +41,11 @@ function getExtensionId() {
 function hasChromeExtensionApi() {
   return extensionBridgeReady;
 }
+function ensureExtensionReadyOrThrow(scene = 'operation') {
+  if (!hasChromeExtensionApi()) {
+    throw new Error(`Chrome extension bridge is required for ${scene}. Please install/enable extension + native host.`);
+  }
+}
 function callExtension(action, payload = {}, timeoutMs = 10000) {
   return new Promise((resolve, reject) => {
     if (!hasChromeExtensionApi()) return reject(new Error('Chrome extension bridge not available.'));
@@ -588,17 +593,9 @@ async function loadFsEntriesWithFallback(path, mode) {
   }
 }
 async function loadFsEntries(path, mode) {
-  if (hasChromeExtensionApi()) {
-    const result = await callExtension('listFs', { path: path || '', mode });
-    return result || {};
-  }
-  const url = buildApiUrl(`/api/fs?path=${encodeURIComponent(path || '')}&mode=${encodeURIComponent(mode)}`);
-  const response = await fetch(url);
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(text || 'load failed');
-  }
-  return response.json();
+  ensureExtensionReadyOrThrow('directory browsing');
+  const result = await callExtension('listFs', { path: path || '', mode });
+  return result || {};
 }
 async function browseViaFileSystem(target, mode = 'file') {
   const modal = ensureFileBrowserModal();
@@ -811,6 +808,7 @@ function collectNewJobs() {
   });
 }
 async function validateJobsBeforeSubmit(jobs) {
+  ensureExtensionReadyOrThrow('CreateJobs validation');
   const duplicateUarts = new Set();
   const usedUarts = new Set();
   const tclRegex = /\.tcl$/i;
@@ -821,13 +819,13 @@ async function validateJobsBeforeSubmit(jobs) {
     if (job.database_path_enabled && !job.database_path) {
       throw new Error(`Job ${job.jobs_id || '-'}: DataBase Path is enabled but empty.`);
     }
-    if (job.database_path_enabled && hasChromeExtensionApi()) {
+    if (job.database_path_enabled) {
       await callExtension('validatePath', { path: job.database_path, type: 'directory', mustExist: true });
     }
     if (job.reset_script_enabled) {
       if (!job.reset_script) throw new Error(`Job ${job.jobs_id || '-'}: Reset Script is enabled but empty.`);
       if (job.reset_script && !tclRegex.test(job.reset_script)) throw new Error(`Job ${job.jobs_id || '-'}: Reset Script must be a .tcl file.`);
-      if (hasChromeExtensionApi()) await callExtension('validatePath', { path: job.reset_script, type: 'file', mustExist: true });
+      await callExtension('validatePath', { path: job.reset_script, type: 'file', mustExist: true });
     }
     if (job.imgload_script_enabled) {
       if (!job.imgload_script) throw new Error(`Job ${job.jobs_id || '-'}: ImgLoad Script Path is enabled but empty.`);
@@ -836,10 +834,8 @@ async function validateJobsBeforeSubmit(jobs) {
       if (!job.reset_script_enabled) throw new Error(`Job ${job.jobs_id || '-'}: ImgLoad Script Path requires Reset Script Path enabled.`);
       if (!job.img_file) throw new Error(`Job ${job.jobs_id || '-'}: ImgLoad Script Path is enabled but IMG File path is empty.`);
       if (!imgRegex.test(job.img_file)) throw new Error(`Job ${job.jobs_id || '-'}: IMG File path must be a .img or .bin file.`);
-      if (hasChromeExtensionApi()) {
-        await callExtension('validatePath', { path: job.imgload_script, type: 'file', mustExist: true });
-        await callExtension('validatePath', { path: job.img_file, type: 'file', mustExist: true });
-      }
+      await callExtension('validatePath', { path: job.imgload_script, type: 'file', mustExist: true });
+      await callExtension('validatePath', { path: job.img_file, type: 'file', mustExist: true });
     }
 
     const localSet = new Set();
@@ -858,13 +854,11 @@ async function validateJobsBeforeSubmit(jobs) {
     const logBase = defaultLogRoot ? defaultLogRoot.replace(/\/+$/, '') : '.';
     const logPath = `${logBase}/${safeJobsId}`;
     job.log_path = logPath;
-    if (hasChromeExtensionApi()) {
-      await callExtension('ensureDirectory', { path: logPath, mode: '0777' });
-      await callExtension('appendFile', {
-        path: `${logPath}/frontend.log`,
-        content: `[${new Date().toISOString()}] job validated in frontend\n`,
-      });
-    }
+    await callExtension('ensureDirectory', { path: logPath, mode: '0777' });
+    await callExtension('appendFile', {
+      path: `${logPath}/frontend.log`,
+      content: `[${new Date().toISOString()}] job validated in frontend\n`,
+    });
     job.frontend_validated = true;
   }
 
@@ -901,6 +895,7 @@ async function submitJobs(event) {
   refreshWaitingJobs();
 }
 async function executeFrontendStages(job) {
+  ensureExtensionReadyOrThrow('frontend stage execution');
   const payload = job && job.payload ? job.payload : {};
   const sequence = Array.isArray(payload.frontend_stage_sequence) ? payload.frontend_stage_sequence : [];
   if (!sequence.length) return;
@@ -916,9 +911,7 @@ async function executeFrontendStages(job) {
     let stageMessage = `${stage} completed in frontend`;
     let success = true;
     try {
-      if (hasChromeExtensionApi()) {
-        await callExtension('runStage', { stage, job_id: job.id, payload }, FRONTEND_STAGE_TIMEOUT_MS);
-      }
+      await callExtension('runStage', { stage, job_id: job.id, payload }, FRONTEND_STAGE_TIMEOUT_MS);
     } catch (error) {
       success = false;
       stageMessage = error instanceof Error ? error.message : String(error);

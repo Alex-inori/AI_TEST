@@ -152,3 +152,6 @@ pip install fastapi uvicorn pyserial
    - `appendFile`
    - `listFs`（前端用户目录浏览）
    - `runStage`
+
+> 注意：CreateJobs 的目录浏览、路径校验、日志目录创建已强制走前端 extension/native-host，
+> 不再回退后端 `/api/fs`，以避免后端 app 用户权限导致的 `Permission denied` 校验误差。
