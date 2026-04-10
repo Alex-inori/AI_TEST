@@ -1913,7 +1913,7 @@ def get_jobs(request: Request) -> dict[str, Any]:
 
 
 @app.get("/api/platform-options")
-def get_platform_options() -> dict[str, list[str]]:
+def get_platform_options() -> dict[str, Any]:
     try:
         settings = load_haps_settings()
     except ValueError as exc:
