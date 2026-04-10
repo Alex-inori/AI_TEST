@@ -119,6 +119,8 @@ pip install fastapi uvicorn pyserial
 - `POST /api/jobs`：提交 jobs
 - `GET /api/jobs`：查询 recent jobs
 - `POST /api/jobs/{job_id}/stop`：停止运行中的 job
+- `POST /api/jobs/{job_id}/frontend-stage/action`：后端下发当前前端阶段 action
+- `POST /api/jobs/{job_id}/frontend-stage/complete`：前端回传阶段执行结果
 - `WS /ws/uart`：UART 实时流（按 Job + 设备输出）
 
 ## cfgshell.conf 可选配置

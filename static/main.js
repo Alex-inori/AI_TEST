@@ -905,22 +905,26 @@ async function submitJobs(event) {
 }
 async function executeFrontendStages(job) {
   ensureExtensionReadyOrThrow('frontend stage execution');
-  const payload = job && job.payload ? job.payload : {};
-  const sequence = Array.isArray(payload.frontend_stage_sequence) ? payload.frontend_stage_sequence : [];
-  if (!sequence.length) return;
-  for (const stage of sequence) {
-    if (stage === 'Running::HAPS_RDY') break;
-    const stageStartResp = await fetch(buildApiUrl(`/api/jobs/${job.id}/frontend-stage/start`), {
+  while (true) {
+    const actionResp = await fetch(buildApiUrl(`/api/jobs/${job.id}/frontend-stage/action`), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ stage }),
+      body: JSON.stringify({ force_refresh: false }),
     });
-    if (!stageStartResp.ok) throw new Error(await stageStartResp.text());
+    if (!actionResp.ok) throw new Error(await actionResp.text());
+    const actionData = await actionResp.json();
+    if (actionData.done) break;
+    const stage = String(actionData.stage || '');
+    const stagePayload = actionData.payload || {};
     const startedAt = Date.now();
     let stageMessage = `${stage} completed in frontend`;
     let success = true;
     try {
-      await callExtension('runStage', { stage, job_id: job.id, payload }, FRONTEND_STAGE_TIMEOUT_MS);
+      await callExtension(
+        'runStage',
+        { stage, job_id: job.id, payload: stagePayload, runtime_config: runtimeConfig },
+        Number(actionData.timeout_seconds || 300) * 1000,
+      );
     } catch (error) {
       success = false;
       stageMessage = error instanceof Error ? error.message : String(error);

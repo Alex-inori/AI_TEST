@@ -85,11 +85,45 @@ def _open_terminal(terminal_path: str, cwd: str) -> dict[str, Any]:
 
 
 def _run_stage(stage: str, payload: dict[str, Any]) -> dict[str, Any]:
-    # Keep this deterministic/demo-friendly. Extend as needed.
     if not re.match(r"^Running::[A-Za-z0-9_ ]+$", stage):
         raise ValueError(f"invalid stage: {stage}")
-    time.sleep(0.2)
-    return {"stage": stage, "jobs_id": payload.get("jobs_id", "")}
+    runtime_cfg = payload.get("runtime_config") or {}
+    job_payload = payload.get("payload") or {}
+    log_path = str((job_payload.get("log_path") if isinstance(job_payload, dict) else "") or "").strip()
+    log_file = Path(log_path).expanduser() / "frontend-stage.log" if log_path else None
+
+    def _log(line: str) -> None:
+        if not log_file:
+            return
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        with log_file.open("a", encoding="utf-8") as f:
+            f.write(f"{line}\n")
+
+    if stage == "Running::Loading HAPS_DB":
+        db_path = str((job_payload.get("database_path") if isinstance(job_payload, dict) else "") or "").strip()
+        if not db_path:
+            raise ValueError("database_path missing for Loading HAPS_DB")
+        _validate_path(db_path, "directory", True)
+        _log(f"[{stage}] verified database path: {db_path}")
+    elif stage == "Running::Loading SW_IMG":
+        img_file = str((job_payload.get("img_file") if isinstance(job_payload, dict) else "") or "").strip()
+        if not img_file:
+            raise ValueError("img_file missing for Loading SW_IMG")
+        _validate_path(img_file, "file", True)
+        _log(f"[{stage}] verified image file: {img_file}")
+    elif stage == "Running::Resetting HAPS_ENV":
+        reset_script = str((job_payload.get("reset_script") if isinstance(job_payload, dict) else "") or "").strip()
+        if not reset_script:
+            raise ValueError("reset_script missing for Resetting HAPS_ENV")
+        _validate_path(reset_script, "file", True)
+        _log(f"[{stage}] verified reset script: {reset_script}")
+
+    confprosh = str(runtime_cfg.get("HAPS_CONFPROSH") or "").strip()
+    if confprosh:
+        _log(f"[{stage}] runtime HAPS_CONFPROSH available: {confprosh}")
+    time.sleep(0.1)
+    jobs_id = job_payload.get("jobs_id", "") if isinstance(job_payload, dict) else ""
+    return {"stage": stage, "jobs_id": jobs_id}
 
 
 def _list_fs(path_text: str, mode: str = "file") -> dict[str, Any]:

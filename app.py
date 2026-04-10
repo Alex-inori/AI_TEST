@@ -190,6 +190,10 @@ class FrontendStageCompleteRequest(BaseModel):
     message: str = ""
 
 
+class FrontendStageActionRequest(BaseModel):
+    force_refresh: bool = False
+
+
 @dataclass
 class JobRecord:
     id: str
@@ -1205,6 +1209,38 @@ class JobManager:
             job.message = f"frontend stage started: {stage}"
             return job
 
+    def get_frontend_stage_action(self, job_id: str, user_id: str, force_refresh: bool = False) -> dict[str, Any]:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job:
+                raise KeyError(job_id)
+            payload = job.payload or {}
+            if str(payload.get("user_id") or "") != user_id:
+                raise PermissionError("can only query own running job")
+            if not bool(payload.get("frontend_managed", False)):
+                raise ValueError("job is not frontend managed")
+            sequence = [str(item) for item in list(payload.get("frontend_stage_sequence") or []) if str(item)]
+            index = int(payload.get("frontend_stage_index", 0) or 0)
+            if not sequence or index >= len(sequence):
+                return {"done": True, "stage": "Running::HAPS_RDY", "action": ""}
+            stage = sequence[index]
+            if stage == "Running::HAPS_RDY":
+                return {"done": True, "stage": stage, "action": ""}
+
+            if force_refresh or not str(payload.get("frontend_stage_deadline") or "").strip():
+                payload["frontend_stage_deadline"] = (
+                    datetime.now() + timedelta(seconds=FRONTEND_STAGE_TIMEOUT_SECONDS)
+                ).isoformat(timespec="seconds")
+            job.status = stage
+            job.message = f"frontend action dispatched: {stage}"
+            return {
+                "done": False,
+                "stage": stage,
+                "action": "runStage",
+                "timeout_seconds": FRONTEND_STAGE_TIMEOUT_SECONDS,
+                "payload": payload,
+            }
+
     def complete_frontend_stage(self, job_id: str, stage: str, success: bool, message: str, user_id: str) -> JobRecord:
         with self._lock:
             job = self._jobs.get(job_id)
@@ -2003,6 +2039,19 @@ def start_frontend_stage(job_id: str, body: FrontendStageStartRequest, request: 
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return manager._to_api(job)
+
+
+@app.post("/api/jobs/{job_id}/frontend-stage/action")
+def get_frontend_stage_action(job_id: str, body: FrontendStageActionRequest, request: Request) -> dict[str, Any]:
+    user_id = get_system_user_id(request)
+    try:
+        return manager.get_frontend_stage_action(job_id, user_id, force_refresh=body.force_refresh)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="job not found") from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/api/jobs/{job_id}/frontend-stage/complete")
