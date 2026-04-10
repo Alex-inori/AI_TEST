@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "CfgShell Frontend Bridge",
+  "version": "0.1.0",
+  "description": "Bridge web UI to native host for terminal and running stages.",
+  "permissions": ["nativeMessaging"],
+  "host_permissions": ["http://127.0.0.1/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://127.0.0.1/*"],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ]
+}

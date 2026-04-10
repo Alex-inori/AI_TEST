@@ -38,6 +38,7 @@ UTILIZATION_LOG_FILE = APP_ROOT / "ultization.log"
 DEFAULT_SERVICE_PORT = 8000
 DEFAULT_CREATE_JOBS_MAX_NUM = 5
 DEFAULT_RECENT_JOBS_MAX_NUM = 10
+FRONTEND_STAGE_TIMEOUT_SECONDS = 5 * 60
 REQUIRED_HAPS_SETTINGS = {
     "HAPS_CONFPROSH",
     "HAPS_DB_LOADING_TCL",
@@ -128,6 +129,28 @@ def load_ui_limits() -> dict[str, int]:
 def load_terminal_path() -> str:
     cfg_entries = _load_cfg_entries(required=False)
     return str(cfg_entries.get("TERMINAL") or "").strip()
+
+
+def load_frontend_runtime_config() -> dict[str, Any]:
+    settings = load_haps_settings()
+    limits = load_ui_limits()
+    return {
+        "service_port": int(limits.get("service_port", DEFAULT_SERVICE_PORT)),
+        "create_jobs_max_num": int(limits.get("create_jobs_max_num", DEFAULT_CREATE_JOBS_MAX_NUM)),
+        "recent_jobs_max_num": int(limits.get("recent_jobs_max_num", DEFAULT_RECENT_JOBS_MAX_NUM)),
+        "stage_timeout_seconds": FRONTEND_STAGE_TIMEOUT_SECONDS,
+        "terminal_path": load_terminal_path(),
+        "haps_platforms": [str(item).strip() for item in list(settings.get("HAPS_PLATFORM") or []) if str(item).strip()],
+        "uart_devices": [str(item).strip() for item in list(settings.get("UART_DEVICE") or []) if str(item).strip()],
+        "defaults": {
+            "haps_confprosh": str(settings.get("HAPS_CONFPROSH") or "").strip(),
+            "haps_db_loading_tcl": str(settings.get("HAPS_DB_LOADING_TCL") or "").strip(),
+            "haps_reset_tcl": str(settings.get("HAPS_RESET_TCL") or "").strip(),
+            "haps_img_loading_tcl": str(settings.get("HAPS_IMG_LOADING_TCL") or "").strip(),
+            "haps_hmf_txt": str(settings.get("HAPS_HMF_TXT") or "").strip(),
+            "uart_log_path": str(settings.get("UART_LOG_PATH") or "").strip(),
+        },
+    }
 
 
 class OpenOcdCfgInput(BaseModel):
@@ -527,6 +550,7 @@ class JobManager:
         self._img_dedup_signatures: set[str] = set()
         self._lock = threading.Lock()
         self._uart_stream = uart_stream
+        self._frontend_stage_feedback: dict[str, dict[str, Any]] = {}
 
     @staticmethod
     def _compute_duration_seconds(submit_time: str, end_time: str) -> int:
@@ -795,6 +819,61 @@ class JobManager:
             return self.PREPARE_RESET_DELAY_AFTER_IMG_SECONDS
         return self.PREPARE_RESET_DELAY_NO_IMG_SECONDS
 
+    def report_frontend_stage(self, job_id: str, stage: str, ok: bool, message: str = "") -> JobRecord:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job:
+                raise KeyError(job_id)
+            if not self._is_running_status(job.status):
+                raise ValueError("job is not running")
+            self._frontend_stage_feedback[job_id] = {
+                "stage": str(stage),
+                "ok": bool(ok),
+                "message": str(message or "").strip(),
+                "ts": datetime.now().isoformat(timespec="seconds"),
+            }
+            return job
+
+    def _wait_frontend_stage(self, job_id: str, run_token: int, stage_key: str, timeout_seconds: int = FRONTEND_STAGE_TIMEOUT_SECONDS) -> tuple[bool, str]:
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            with self._lock:
+                if not self._job_is_current_locked(job_id, run_token):
+                    return False, "job no longer active"
+                feedback = self._frontend_stage_feedback.get(job_id)
+                if feedback and str(feedback.get("stage") or "") == stage_key:
+                    self._frontend_stage_feedback.pop(job_id, None)
+                    return bool(feedback.get("ok", False)), str(feedback.get("message") or "")
+            time.sleep(self.PREPARE_POLL_INTERVAL_SECONDS)
+        return False, f"frontend stage timeout after {timeout_seconds}s"
+
+    def _run_frontend_prepare_stages(self, job_id: str, run_token: int, payload: dict[str, Any], log_file: Any) -> bool:
+        stages: list[tuple[str, str]] = []
+        if self._should_run_prepare(payload):
+            stages.append(("load_db", "Running::Loading HAPS_DB"))
+            if self._should_run_imgload(payload):
+                stages.append(("load_img", "Running::Loading SW_IMG"))
+            stages.append(("reset", "Running::Resetting HAPS_ENV"))
+
+        for stage_key, stage_status in stages:
+            with self._lock:
+                if not self._job_is_current_locked(job_id, run_token):
+                    return False
+                self._jobs[job_id].status = stage_status
+            self._log_stage_timestamp(log_file, stage_key, "start(frontend)")
+            ok, detail = self._wait_frontend_stage(job_id, run_token, stage_key, FRONTEND_STAGE_TIMEOUT_SECONDS)
+            self._log_stage_timestamp(log_file, stage_key, "end(frontend)")
+            if not ok:
+                with self._lock:
+                    if self._job_is_current_locked(job_id, run_token):
+                        self._jobs[job_id].status = "Failed"
+                        self._jobs[job_id].end_time = datetime.now().isoformat(timespec="seconds")
+                        self._jobs[job_id].message = detail or f"frontend stage failed: {stage_key}"
+                        self._append_utilization_log(self._jobs[job_id])
+                        self._promote_waiting_locked()
+                return False
+        return True
+
     def _prepare_and_launch_job(self, job_id: str, run_token: int) -> None:
         with self._lock:
             job = self._jobs.get(job_id)
@@ -808,9 +887,11 @@ class JobManager:
             log_path = str(payload.get("log_path") or "").strip()
             lock_settings: dict[str, Any] | None = None
             lock_cfgshell_cmd: list[str] | None = None
+            is_extension_mode = str(payload.get("execution_mode") or "").strip().lower() == "extension"
             if log_path:
                 log_dir = Path(log_path).expanduser()
-                log_dir.mkdir(parents=True, exist_ok=True)
+                if not is_extension_mode:
+                    log_dir.mkdir(parents=True, exist_ok=True)
                 jobs_id = str(payload.get("jobs_id") or job_id)
                 safe_jobs_id = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in jobs_id)
                 process_log_path = log_dir / f"{safe_jobs_id}.log"
@@ -819,7 +900,10 @@ class JobManager:
             lock_settings = self._read_haps_settings()
             lock_cfgshell_cmd = list(lock_settings.get("HAPS_CONFPROSH_CMD") or [])
 
-            if self._should_run_prepare(payload):
+            if is_extension_mode:
+                if not self._run_frontend_prepare_stages(job_id, run_token, payload, log_file):
+                    return
+            elif self._should_run_prepare(payload):
                 settings = lock_settings or self._read_haps_settings()
                 cfgshell_cmd = lock_cfgshell_cmd or list(settings.get("HAPS_CONFPROSH_CMD") or [])
                 db_load_script = str(settings.get("HAPS_DB_LOADING_TCL") or "").strip()
@@ -1691,6 +1775,13 @@ def get_client_config() -> dict[str, int]:
     return load_ui_limits()
 
 
+@app.get("/api/frontend-runtime-config")
+def get_frontend_runtime_config() -> dict[str, Any]:
+    try:
+        return load_frontend_runtime_config()
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
 
 
 @app.get("/api/directories")
@@ -1790,6 +1881,7 @@ def submit_jobs(payload: SubmitJobsRequest, request: Request) -> dict[str, Any]:
         data = json.loads(item.model_dump_json())
         try:
             data["user_id"] = system_user
+            is_extension_mode = str(data.get("execution_mode") or "").strip().lower() == "extension"
             if not str(data.get("haps_platform") or "").strip():
                 data["haps_platform"] = default_platform
             data["jobs_id"] = build_jobs_id(data.get("jobs_id", ""), data["user_id"])
@@ -1797,17 +1889,19 @@ def submit_jobs(payload: SubmitJobsRequest, request: Request) -> dict[str, Any]:
                 data["reset_script"] = str(settings.get("HAPS_RESET_TCL") or "").strip()
             if bool(data.get("imgload_script_enabled", False)) and not str(data.get("imgload_script") or "").strip():
                 data["imgload_script"] = str(settings.get("HAPS_IMG_LOADING_TCL") or "").strip()
-            data["log_path"] = build_default_log_path(
-                str(settings.get("UART_LOG_PATH") or ""),
-                data["user_id"],
-                data["jobs_id"],
-            )
-            if data["log_path"]:
-                Path(data["log_path"]).mkdir(parents=True, exist_ok=True)
+            if not is_extension_mode:
+                data["log_path"] = build_default_log_path(
+                    str(settings.get("UART_LOG_PATH") or ""),
+                    data["user_id"],
+                    data["jobs_id"],
+                )
             if "HAPS100" in str(data.get("haps_platform") or ""):
                 data["haps_hmf_txt"] = str(settings.get("HAPS_HMF_TXT") or "").strip()
 
-            validate_submit_payload(data, settings=settings, used_uart_paths=used_uart_paths)
+            if not is_extension_mode:
+                if data["log_path"]:
+                    Path(data["log_path"]).mkdir(parents=True, exist_ok=True)
+                validate_submit_payload(data, settings=settings, used_uart_paths=used_uart_paths)
             data["log_info"] = build_log_info(data.get("log_path", ""))
             result = manager.submit(data)
         except ValueError as exc:
@@ -1826,8 +1920,8 @@ def stop_job(job_id: str) -> dict[str, Any]:
     return manager._to_api(job)
 
 
-@app.post("/api/jobs/{job_id}/open-terminal")
-def open_job_terminal(job_id: str, request: Request) -> dict[str, Any]:
+@app.post("/api/jobs/{job_id}/terminal-intent")
+def get_job_terminal_intent(job_id: str, request: Request) -> dict[str, Any]:
     viewer_user_id = get_system_user_id(request)
     all_jobs = manager.list_jobs(viewer_user_id=viewer_user_id)
     target = next((job for job in all_jobs if str(job.get("id")) == str(job_id)), None)
@@ -1839,31 +1933,29 @@ def open_job_terminal(job_id: str, request: Request) -> dict[str, Any]:
     if not manager._is_running_status(str(target.get("status") or "")):
         raise HTTPException(status_code=400, detail="terminal can only be opened for running jobs")
 
-    terminal_path = load_terminal_path()
-    if not terminal_path:
-        raise HTTPException(status_code=400, detail="missing TERMINAL in cfgshell.conf")
-    if not Path(terminal_path).exists():
-        raise HTTPException(status_code=400, detail=f"terminal path not found: {terminal_path}")
-    if not os.access(terminal_path, os.X_OK):
-        raise HTTPException(status_code=400, detail=f"terminal path is not executable: {terminal_path}")
-
     launch_cwd = str(payload.get("log_path") or "").strip() or str(Path.home())
-    if not Path(launch_cwd).exists():
-        launch_cwd = str(Path.home())
+    return {
+        "ok": True,
+        "terminal_path": load_terminal_path(),
+        "cwd": launch_cwd,
+        "job_id": job_id,
+    }
 
+
+@app.post("/api/jobs/{job_id}/stage-report")
+def report_stage_result(job_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    stage = str(payload.get("stage") or "").strip()
+    ok = bool(payload.get("ok", False))
+    message = str(payload.get("message") or "").strip()
+    if not stage:
+        raise HTTPException(status_code=400, detail="stage is required")
     try:
-        subprocess.Popen(  # noqa: S603
-            [terminal_path],  # noqa: S607
-            cwd=launch_cwd,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"failed to open terminal: {exc}") from exc
-
-    return {"ok": True}
+        job = manager.report_frontend_stage(job_id, stage, ok, message)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="job not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return manager._to_api(job)
 
 
 @app.post("/api/jobs/{job_id}/confirm-stop")

@@ -20,6 +20,10 @@ let hapsPlatforms = [];
 let uartDevices = [];
 let servicePort = 8000;
 let createJobsMaxNum = 5;
+let stageTimeoutSeconds = 300;
+let extensionBridgeReady = false;
+let frontendDefaults = {};
+const stageInFlight = new Set();
 
 function serviceBaseUrl() {
   return `http://127.0.0.1:${servicePort}`;
@@ -29,6 +33,87 @@ function wsBaseUrl() {
 }
 function buildApiUrl(path) {
   return `${serviceBaseUrl()}${path}`;
+}
+async function tryOpenTerminalViaExtension(intent) {
+  const bridge = window.CfgShellExtension;
+  if (!bridge || typeof bridge.openNativeTerminal !== 'function') return false;
+  await bridge.openNativeTerminal({
+    terminalPath: intent.terminal_path || '',
+    cwd: intent.cwd || '',
+    jobId: intent.job_id || '',
+  });
+  return true;
+}
+async function runFrontendStage(jobId, stage, job) {
+  const bridge = window.CfgShellExtension;
+  if (!bridge || typeof bridge.runJobStage !== 'function') return;
+  const timeoutMs = stageTimeoutSeconds * 1000;
+  let ok = false;
+  let message = '';
+  try {
+    const result = await bridge.runJobStage({
+      stage,
+      job,
+      timeoutMs,
+      defaults: frontendDefaults || {},
+    });
+    ok = !!(result && result.ok);
+    message = String((result && result.message) || '');
+  } catch (err) {
+    ok = false;
+    message = err instanceof Error ? err.message : String(err);
+  }
+  await fetch(buildApiUrl(`/api/jobs/${jobId}/stage-report`), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ stage, ok, message }),
+  });
+}
+async function driveFrontendStages(jobs) {
+  if (!extensionBridgeReady) return;
+  for (const job of jobs || []) {
+    const payload = job.payload || {};
+    if (String(payload.execution_mode || '') !== 'extension') continue;
+    if (job.status === 'Running::Loading HAPS_DB' && !stageInFlight.has(`${job.id}::load_db`)) {
+      stageInFlight.add(`${job.id}::load_db`);
+      try { await runFrontendStage(job.id, 'load_db', payload); } finally { stageInFlight.delete(`${job.id}::load_db`); }
+    }
+    if (job.status === 'Running::Loading SW_IMG' && !stageInFlight.has(`${job.id}::load_img`)) {
+      stageInFlight.add(`${job.id}::load_img`);
+      try { await runFrontendStage(job.id, 'load_img', payload); } finally { stageInFlight.delete(`${job.id}::load_img`); }
+    }
+    if (job.status === 'Running::Resetting HAPS_ENV' && !stageInFlight.has(`${job.id}::reset`)) {
+      stageInFlight.add(`${job.id}::reset`);
+      try { await runFrontendStage(job.id, 'reset', payload); } finally { stageInFlight.delete(`${job.id}::reset`); }
+    }
+  }
+}
+function normalizeJobId(jobsId, userId) {
+  const raw = String(jobsId || '').trim();
+  if (raw) return raw;
+  const user = String(userId || 'user').trim() || 'user';
+  const now = new Date();
+  const pad = (v) => String(v).padStart(2, '0');
+  const ts = `${String(now.getFullYear()).slice(-2)}${pad(now.getMonth() + 1)}${pad(now.getDate())}${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  return `${user}_${ts}`;
+}
+function buildFrontendLogPath(logRoot, jobsId) {
+  const root = String(logRoot || '').trim().replace(/\/+$/, '');
+  if (!root) return '';
+  const safeJob = String(jobsId || 'job').replace(/[^A-Za-z0-9_-]/g, '_');
+  return `${root}/${safeJob}`;
+}
+async function validateLocalPath(path, type) {
+  const bridge = window.CfgShellExtension;
+  if (!bridge || typeof bridge.validatePath !== 'function') return;
+  await bridge.validatePath({ path, type });
+}
+async function ensureLogDirectory(path) {
+  const bridge = window.CfgShellExtension;
+  if (!bridge || typeof bridge.ensureLogDirectory !== 'function') {
+    throw new Error('Chrome extension unavailable: cannot create log directory.');
+  }
+  await bridge.ensureLogDirectory({ path, writable: true });
 }
 function trimOldestCreateJobsIfNeeded(limit = createJobsMaxNum) {
   const max = Number.parseInt(limit, 10);
@@ -532,6 +617,10 @@ async function loadFsEntriesWithFallback(path, mode) {
   }
 }
 async function loadFsEntries(path, mode) {
+  const bridge = window.CfgShellExtension;
+  if (bridge && typeof bridge.listDirectory === 'function') {
+    return bridge.listDirectory({ path: path || '', mode });
+  }
   const url = buildApiUrl(`/api/fs?path=${encodeURIComponent(path || '')}&mode=${encodeURIComponent(mode)}`);
   const response = await fetch(url);
   if (!response.ok) {
@@ -728,8 +817,10 @@ function collectNewJobs() {
     const dbPathEnabled = card.querySelector('.db-config-toggle[data-target="database_path"]').checked;
     const resetScriptEnabled = card.querySelector('.db-config-toggle[data-target="reset_script"]').checked;
     const imgLoadScriptEnabled = card.querySelector('.db-config-toggle[data-target="imgload_script"]').checked;
+    const jobsId = normalizeJobId(card.querySelector('input[name="jobs_id"]').value.trim(), currentUserId);
+    const logPath = buildFrontendLogPath(frontendDefaults.uart_log_path || '', jobsId);
     return {
-      jobs_id: card.querySelector('input[name="jobs_id"]').value.trim(),
+      jobs_id: jobsId,
       haps_platform: card.querySelector('select[name="haps_platform"]').value,
       database_path: dbPathEnabled ? card.querySelector('input[name="database_path"]').value.trim() : '',
       database_path_enabled: dbPathEnabled,
@@ -747,10 +838,12 @@ function collectNewJobs() {
       duration_minutes: parseSelectedDurationMinutes(jobsDurationMinutes.value),
       auto_finish: autoFinishEnabled.checked,
       user_id: currentUserId,
+      log_path: logPath,
+      execution_mode: "extension",
     };
   });
 }
-function validateJobsBeforeSubmit(jobs) {
+async function validateJobsBeforeSubmit(jobs) {
   const duplicateUarts = new Set();
   const usedUarts = new Set();
   const tclRegex = /\.tcl$/i;
@@ -788,12 +881,20 @@ function validateJobsBeforeSubmit(jobs) {
   if (duplicateUarts.size) {
     throw new Error(`Duplicate UART path detected: ${Array.from(duplicateUarts).join(', ')}`);
   }
+
+  for (const job of jobs) {
+    if (job.database_path_enabled && job.database_path) await validateLocalPath(job.database_path, 'file');
+    if (job.reset_script_enabled && job.reset_script) await validateLocalPath(job.reset_script, 'file');
+    if (job.imgload_script_enabled && job.imgload_script) await validateLocalPath(job.imgload_script, 'file');
+    if (job.imgload_script_enabled && job.img_file) await validateLocalPath(job.img_file, 'file');
+    if (job.log_path) await ensureLogDirectory(job.log_path);
+  }
 }
 async function submitJobs(event) {
   event.preventDefault();
   const jobs = collectNewJobs();
   try {
-    validateJobsBeforeSubmit(jobs);
+    await validateJobsBeforeSubmit(jobs);
   } catch (err) {
     alert(err instanceof Error ? err.message : String(err));
     return;
@@ -825,12 +926,20 @@ async function stopAndResubmitJob(jobId) {
   refreshWaitingJobs();
 }
 async function openRunningJobTerminal(jobId) {
-  const response = await fetch(buildApiUrl(`/api/jobs/${jobId}/open-terminal`), { method: 'POST' });
+  const response = await fetch(buildApiUrl(`/api/jobs/${jobId}/terminal-intent`), { method: 'POST' });
   if (!response.ok) {
     try {
       const detail = await response.text();
       alert(`Open Terminal failed: ${detail}`);
     } catch (_) {}
+    return;
+  }
+  const intent = await response.json();
+  try {
+    const handled = await tryOpenTerminalViaExtension(intent);
+    if (!handled) alert('Chrome extension unavailable: cannot start native terminal.');
+  } catch (err) {
+    alert(`Open Terminal failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 function formatWait(seconds) {
@@ -1048,16 +1157,23 @@ async function refreshRecentJobs() {
   }
   if (isEditingUartInput()) return;
   renderRecentJobs(jobs);
+  driveFrontendStages(jobs);
 }
 async function bootstrap() {
+  let runtimeCfg = {};
   try {
-    const cfgResp = await fetch('/api/client-config');
+    const cfgResp = await fetch('/api/frontend-runtime-config');
     if (cfgResp.ok) {
       const cfg = await cfgResp.json();
+      runtimeCfg = cfg || {};
       const parsedPort = Number.parseInt(cfg.service_port, 10);
       if (Number.isFinite(parsedPort) && parsedPort > 0) servicePort = parsedPort;
       const parsedCreateMax = Number.parseInt(cfg.create_jobs_max_num, 10);
       if (Number.isFinite(parsedCreateMax) && parsedCreateMax > 0) createJobsMaxNum = parsedCreateMax;
+      const parsedStageTimeout = Number.parseInt(cfg.stage_timeout_seconds, 10);
+      if (Number.isFinite(parsedStageTimeout) && parsedStageTimeout > 0) stageTimeoutSeconds = parsedStageTimeout;
+      frontendDefaults = cfg.defaults || {};
+      extensionBridgeReady = !!(window.CfgShellExtension && typeof window.CfgShellExtension.runJobStage === 'function');
     }
   } catch (_) {}
   try {
@@ -1069,16 +1185,22 @@ async function bootstrap() {
     }
   } catch (_) {}
   try {
-    const platformResp = await fetch(buildApiUrl('/api/platform-options'));
-    if (!platformResp.ok) {
-      alert(`Failed to load HAPS platform config: ${await platformResp.text()}`);
-      return;
-    }
-    const platformData = await platformResp.json();
-    hapsPlatforms = Array.isArray(platformData.haps_platforms) ? platformData.haps_platforms : [];
-    uartDevices = Array.isArray(platformData.uart_devices)
-      ? platformData.uart_devices.map((item) => String(item || '').trim()).filter(Boolean)
+    hapsPlatforms = Array.isArray(runtimeCfg.haps_platforms) ? runtimeCfg.haps_platforms : [];
+    uartDevices = Array.isArray(runtimeCfg.uart_devices)
+      ? runtimeCfg.uart_devices.map((item) => String(item || '').trim()).filter(Boolean)
       : [];
+    if (!hapsPlatforms.length) {
+      const platformResp = await fetch(buildApiUrl('/api/platform-options'));
+      if (!platformResp.ok) {
+        alert(`Failed to load HAPS platform config: ${await platformResp.text()}`);
+        return;
+      }
+      const platformData = await platformResp.json();
+      hapsPlatforms = Array.isArray(platformData.haps_platforms) ? platformData.haps_platforms : [];
+      uartDevices = Array.isArray(platformData.uart_devices)
+        ? platformData.uart_devices.map((item) => String(item || '').trim()).filter(Boolean)
+        : [];
+    }
   } catch (error) {
     alert(`Failed to load HAPS platform config: ${error instanceof Error ? error.message : String(error)}`);
     return;
