@@ -626,6 +626,11 @@ class JobManager:
         run_token = job.run_token
         threading.Thread(target=self._prepare_and_launch_job, args=(job.id, run_token), daemon=True).start()
 
+    def _launch_after_frontend_prepare_locked(self, job: JobRecord) -> None:
+        job.run_token += 1
+        run_token = job.run_token
+        threading.Thread(target=self._lock_and_launch_job, args=(job.id, run_token), daemon=True).start()
+
     @staticmethod
     def _is_running_status(status: str) -> bool:
         return str(status).startswith("Running::")
@@ -1037,6 +1042,79 @@ class JobManager:
                 except Exception:
                     pass
 
+    def _lock_and_launch_job(self, job_id: str, run_token: int) -> None:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job or job.run_token != run_token:
+                return
+            payload = dict(job.payload or {})
+
+        log_file = None
+        lock_acquired = False
+        try:
+            log_path = str(payload.get("log_path") or "").strip()
+            if log_path:
+                log_dir = Path(log_path).expanduser()
+                log_dir.mkdir(parents=True, exist_ok=True)
+                jobs_id = str(payload.get("jobs_id") or job_id)
+                safe_jobs_id = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in jobs_id)
+                process_log_path = log_dir / f"{safe_jobs_id}.log"
+                log_file = process_log_path.open("a", encoding="utf-8")
+
+            settings = self._read_haps_settings()
+            cfgshell_cmd_for_lock = list(settings.get("HAPS_CONFPROSH_CMD") or [])
+
+            with self._lock:
+                if not self._job_is_current_locked(job_id, run_token):
+                    return
+                self._jobs[job_id].status = "Running::HAPS_RDY"
+                self._jobs[job_id].message = "frontend stages completed, backend locking HAPS"
+
+            self._acquire_device_lock(job_id, payload, cfgshell_cmd_for_lock, log_file)
+            lock_acquired = True
+
+            with self._lock:
+                if not self._job_is_current_locked(job_id, run_token):
+                    self._release_haps_lock_locked(job_id, log_file=log_file)
+                    lock_acquired = False
+                    return
+                job = self._jobs[job_id]
+                command = self._build_job_command(job.payload)
+                process = subprocess.Popen(
+                    ["bash", "-lc", command],
+                    stdout=log_file if log_file is not None else subprocess.DEVNULL,
+                    stderr=log_file if log_file is not None else subprocess.DEVNULL,
+                    text=True,
+                )
+                job.process = process
+                uart_paths = list((job.payload or {}).get("uart_paths") or [])
+                jobs_id = str((job.payload or {}).get("jobs_id") or job.id)
+                log_path = str((job.payload or {}).get("log_path") or "")
+                self._uart_stream.start_capture(job.id, jobs_id, uart_paths, log_path)
+                threading.Thread(target=self._watch_job, args=(job.id, job.run_token), daemon=True).start()
+        except Exception as exc:
+            self._write_process_log(log_file, f"[HAPS_LOCK] lock/launch exception: {exc}")
+            with self._lock:
+                if self._job_is_current_locked(job_id, run_token):
+                    self._release_haps_lock_locked(job_id, log_file=log_file)
+                    lock_acquired = False
+                    self._jobs[job_id].status = "Failed"
+                    self._jobs[job_id].end_time = datetime.now().isoformat(timespec="seconds")
+                    self._jobs[job_id].message = f"backend lock/launch failed: {exc}"
+                    self._append_utilization_log(self._jobs[job_id])
+                    self._promote_waiting_locked()
+        finally:
+            if lock_acquired:
+                with self._lock:
+                    if not self._job_is_current_locked(job_id, run_token):
+                        self._release_haps_lock_locked(job_id, log_file=log_file)
+            if log_file is not None:
+                try:
+                    log_file.flush()
+                    log_file.close()
+                except Exception:
+                    pass
+
 
     @staticmethod
     def _duration_minutes(payload: dict[str, Any]) -> int:
@@ -1315,7 +1393,7 @@ class JobManager:
                 append_backend_debug_log(
                     f"stage_complete_success job_id={job_id} stage={stage} next=Running::Loading HAPS backend_lock=enabled"
                 )
-                self._launch_job_process_locked(job)
+                self._launch_after_frontend_prepare_locked(job)
                 return job
             next_stage = sequence[index + 1]
             job.status = next_stage
