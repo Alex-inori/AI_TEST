@@ -88,7 +88,8 @@ def _run_stage(stage: str, payload: dict[str, Any]) -> dict[str, Any]:
     if not re.match(r"^Running::[A-Za-z0-9_ ]+$", stage):
         raise ValueError(f"invalid stage: {stage}")
     runtime_cfg = payload.get("runtime_config") or {}
-    job_payload = payload.get("payload") or {}
+    nested_payload = payload.get("payload")
+    job_payload = nested_payload if isinstance(nested_payload, dict) else payload
     log_path = str((job_payload.get("log_path") if isinstance(job_payload, dict) else "") or "").strip()
     log_file = Path(log_path).expanduser() / "frontend-stage.log" if log_path else None
 
@@ -162,7 +163,7 @@ def _handle(message: dict[str, Any]) -> dict[str, Any]:
     if action == "openTerminal":
         return _open_terminal(str(payload.get("terminalPath") or ""), str(payload.get("cwd") or ""))
     if action == "runStage":
-        return _run_stage(str(payload.get("stage") or ""), payload.get("payload") or {})
+        return _run_stage(str(payload.get("stage") or ""), payload)
     if action == "listFs":
         return _list_fs(str(payload.get("path") or ""), str(payload.get("mode") or "file"))
 
