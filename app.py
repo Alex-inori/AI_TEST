@@ -1450,6 +1450,9 @@ class JobManager:
             job.message = "job resubmitting from Running::Loading HAPS"
             job.stop_confirmed = False
             job.stop_confirm_time = None
+            if isinstance(job.payload, dict):
+                job.payload["frontend_prepare_completed"] = False
+                job.payload["frontend_managed"] = False
 
         if process and process.poll() is None:
             process.terminate()
@@ -1470,6 +1473,9 @@ class JobManager:
             current.message = "job stopped and resubmitted from Running::Loading HAPS"
             current.stop_confirmed = False
             current.stop_confirm_time = None
+            if isinstance(current.payload, dict):
+                current.payload["frontend_prepare_completed"] = False
+                current.payload["frontend_managed"] = False
             self._launch_job_process_locked(current)
             return current
 
