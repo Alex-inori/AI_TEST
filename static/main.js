@@ -837,18 +837,20 @@ async function validateJobsBeforeSubmit(jobs) {
       await callExtension('validatePath', { path: job.database_path, type: 'directory', mustExist: true });
     }
     if (job.reset_script_enabled) {
-      if (!job.reset_script) throw new Error(`Job ${job.jobs_id || '-'}: Reset Script is enabled but empty.`);
       if (job.reset_script && !tclRegex.test(job.reset_script)) throw new Error(`Job ${job.jobs_id || '-'}: Reset Script must be a .tcl file.`);
-      await callExtension('validatePath', { path: job.reset_script, type: 'file', mustExist: true });
+      if (job.reset_script) {
+        await callExtension('validatePath', { path: job.reset_script, type: 'file', mustExist: true });
+      }
     }
     if (job.imgload_script_enabled) {
-      if (!job.imgload_script) throw new Error(`Job ${job.jobs_id || '-'}: ImgLoad Script Path is enabled but empty.`);
       if (job.imgload_script && !tclRegex.test(job.imgload_script)) throw new Error(`Job ${job.jobs_id || '-'}: ImgLoad Script must be a .tcl file.`);
       if (!job.database_path_enabled) throw new Error(`Job ${job.jobs_id || '-'}: ImgLoad Script Path requires DataBase Path enabled.`);
       if (!job.reset_script_enabled) throw new Error(`Job ${job.jobs_id || '-'}: ImgLoad Script Path requires Reset Script Path enabled.`);
       if (!job.img_file) throw new Error(`Job ${job.jobs_id || '-'}: ImgLoad Script Path is enabled but IMG File path is empty.`);
       if (!imgRegex.test(job.img_file)) throw new Error(`Job ${job.jobs_id || '-'}: IMG File path must be a .img or .bin file.`);
-      await callExtension('validatePath', { path: job.imgload_script, type: 'file', mustExist: true });
+      if (job.imgload_script) {
+        await callExtension('validatePath', { path: job.imgload_script, type: 'file', mustExist: true });
+      }
       await callExtension('validatePath', { path: job.img_file, type: 'file', mustExist: true });
     }
 
