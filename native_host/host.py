@@ -13,7 +13,7 @@ import zlib
 from pathlib import Path
 from typing import Any
 
-_IMG_DEDUP_SIGNATURES: set[str] = set()
+_IMG_LAST_SIGNATURES_BY_JOB: dict[str, str] = {}
 BACKEND_DEBUG_LOG_FILE = Path(__file__).resolve().parent.parent / "haps_backend_log.log"
 
 
@@ -167,14 +167,16 @@ def _run_stage(stage: str, payload: dict[str, Any]) -> dict[str, Any]:
         elif stage == "Running::Loading SW_IMG":
             imgload_script = str((job_payload.get("imgload_script") if isinstance(job_payload, dict) else "") or "").strip()
             img_file = str((job_payload.get("img_file") if isinstance(job_payload, dict) else "") or "").strip()
+            jobs_id = str((job_payload.get("jobs_id") if isinstance(job_payload, dict) else "") or "").strip()
             if not imgload_script:
                 raise ValueError("imgload_script missing for Loading SW_IMG")
             try:
                 algo, signature = _calculate_img_dedup_signature(img_file)
-                duplicate = signature in _IMG_DEDUP_SIGNATURES
-                if not duplicate:
-                    _IMG_DEDUP_SIGNATURES.add(signature)
-                dedup_text = "file is remain unchanged" if duplicate else "file is new"
+                dedup_key = jobs_id or "__global__"
+                previous_signature = _IMG_LAST_SIGNATURES_BY_JOB.get(dedup_key)
+                unchanged = previous_signature is not None and previous_signature == signature
+                _IMG_LAST_SIGNATURES_BY_JOB[dedup_key] = signature
+                dedup_text = "file has no change" if unchanged else "file is new"
                 _log(f"[SW_IMG_CHECK] algo={algo} signature={signature} {dedup_text}: {img_file}")
             except Exception as exc:
                 _log(f"[SW_IMG_CHECK] failed: {exc}")
