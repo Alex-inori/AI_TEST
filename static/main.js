@@ -591,15 +591,29 @@ function findParentPath(pathValue) {
   if (slashIndex <= 0) return '/';
   return clean.slice(0, slashIndex);
 }
+function isPermissionDeniedError(error) {
+  const text = String((error && error.message) || error || '').toLowerCase();
+  return text.includes('permission denied') || text.includes('eacces') || text.includes('operation not permitted');
+}
 async function loadFsEntriesWithFallback(path, mode) {
   const trimmed = (path || '').trim();
   try {
     return await loadFsEntries(trimmed, mode);
   } catch (error) {
+    if (isPermissionDeniedError(error)) {
+      return loadFsEntries('', mode);
+    }
     if (!trimmed) throw error;
     const fallbackPath = findParentPath(trimmed);
     if (!fallbackPath || fallbackPath === trimmed) throw error;
-    return loadFsEntries(fallbackPath, mode);
+    try {
+      return await loadFsEntries(fallbackPath, mode);
+    } catch (parentError) {
+      if (isPermissionDeniedError(parentError)) {
+        return loadFsEntries('', mode);
+      }
+      throw parentError;
+    }
   }
 }
 async function loadFsEntries(path, mode) {
@@ -822,7 +836,7 @@ async function validateJobsBeforeSubmit(jobs) {
   const duplicateUarts = new Set();
   const usedUarts = new Set();
   const tclRegex = /\.tcl$/i;
-  const imgRegex = /\.(img|bin)$/i;
+  const imgRegex = /\.(img|bin|dat)$/i;
   const defaultLogRoot = String(runtimeConfig.UART_LOG_PATH || '').trim();
 
   for (const job of jobs) {
@@ -833,18 +847,20 @@ async function validateJobsBeforeSubmit(jobs) {
       await callExtension('validatePath', { path: job.database_path, type: 'directory', mustExist: true });
     }
     if (job.reset_script_enabled) {
-      if (!job.reset_script) throw new Error(`Job ${job.jobs_id || '-'}: Reset Script is enabled but empty.`);
       if (job.reset_script && !tclRegex.test(job.reset_script)) throw new Error(`Job ${job.jobs_id || '-'}: Reset Script must be a .tcl file.`);
-      await callExtension('validatePath', { path: job.reset_script, type: 'file', mustExist: true });
+      if (job.reset_script) {
+        await callExtension('validatePath', { path: job.reset_script, type: 'file', mustExist: true });
+      }
     }
     if (job.imgload_script_enabled) {
-      if (!job.imgload_script) throw new Error(`Job ${job.jobs_id || '-'}: ImgLoad Script Path is enabled but empty.`);
       if (job.imgload_script && !tclRegex.test(job.imgload_script)) throw new Error(`Job ${job.jobs_id || '-'}: ImgLoad Script must be a .tcl file.`);
       if (!job.database_path_enabled) throw new Error(`Job ${job.jobs_id || '-'}: ImgLoad Script Path requires DataBase Path enabled.`);
       if (!job.reset_script_enabled) throw new Error(`Job ${job.jobs_id || '-'}: ImgLoad Script Path requires Reset Script Path enabled.`);
       if (!job.img_file) throw new Error(`Job ${job.jobs_id || '-'}: ImgLoad Script Path is enabled but IMG File path is empty.`);
-      if (!imgRegex.test(job.img_file)) throw new Error(`Job ${job.jobs_id || '-'}: IMG File path must be a .img or .bin file.`);
-      await callExtension('validatePath', { path: job.imgload_script, type: 'file', mustExist: true });
+      if (!imgRegex.test(job.img_file)) throw new Error(`Job ${job.jobs_id || '-'}: IMG File path must be a .img, .bin, or .dat file.`);
+      if (job.imgload_script) {
+        await callExtension('validatePath', { path: job.imgload_script, type: 'file', mustExist: true });
+      }
       await callExtension('validatePath', { path: job.img_file, type: 'file', mustExist: true });
     }
 

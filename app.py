@@ -1469,8 +1469,8 @@ def _validate_img_file(path_text: str, *, field_name: str) -> Path:
         raise ValueError(f"{field_name} not found: {path}")
     if not path.is_file():
         raise ValueError(f"{field_name} must be a file: {path}")
-    if path.suffix.lower() not in {".img", ".bin"}:
-        raise ValueError(f"{field_name} must be a .img or .bin file: {path}")
+    if path.suffix.lower() not in {".img", ".bin", ".dat"}:
+        raise ValueError(f"{field_name} must be a .img, .bin, or .dat file: {path}")
     return path
 
 
@@ -1502,6 +1502,11 @@ def validate_submit_payload(
 
     reset_enabled = bool(payload.get("reset_script_enabled", False))
     imgload_enabled = bool(payload.get("imgload_script_enabled", False))
+    if reset_enabled and not str(payload.get("reset_script") or "").strip():
+        payload["reset_script"] = str(settings.get("HAPS_RESET_TCL") or "").strip()
+    if imgload_enabled and not str(payload.get("imgload_script") or "").strip():
+        payload["imgload_script"] = str(settings.get("HAPS_IMG_LOADING_TCL") or "").strip()
+
     if reset_enabled:
         _validate_tcl_file(str(payload.get("reset_script") or ""), field_name="reset_script")
     if imgload_enabled:
@@ -1759,7 +1764,16 @@ def get_frontend_runtime_config() -> dict[str, Any]:
             cfg[key] = _parse_cfg_list(value)
         else:
             cfg[key] = value
-    return {"config": cfg, "frontend_stage_timeout_seconds": FRONTEND_STAGE_TIMEOUT_SECONDS}
+
+    frontend_defaults = {
+        "reset_script": str(cfg.get("HAPS_RESET_TCL") or "").strip(),
+        "imgload_script": str(cfg.get("HAPS_IMG_LOADING_TCL") or "").strip(),
+    }
+    return {
+        "config": cfg,
+        "frontend_defaults": frontend_defaults,
+        "frontend_stage_timeout_seconds": FRONTEND_STAGE_TIMEOUT_SECONDS,
+    }
 
 
 
