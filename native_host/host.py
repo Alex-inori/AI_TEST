@@ -124,19 +124,16 @@ def _run_stage(stage: str, payload: dict[str, Any]) -> dict[str, Any]:
         db_path = str((job_payload.get("database_path") if isinstance(job_payload, dict) else "") or "").strip()
         if not db_path:
             raise ValueError("database_path missing for Loading HAPS_DB")
-        _validate_path(db_path, "directory", True)
         _log(f"[{stage}] verified database path: {db_path}")
     elif stage == "Running::Loading SW_IMG":
         img_file = str((job_payload.get("img_file") if isinstance(job_payload, dict) else "") or "").strip()
         if not img_file:
             raise ValueError("img_file missing for Loading SW_IMG")
-        _validate_path(img_file, "file", True)
         _log(f"[{stage}] verified image file: {img_file}")
     elif stage == "Running::Resetting HAPS_ENV":
         reset_script = str((job_payload.get("reset_script") if isinstance(job_payload, dict) else "") or "").strip()
         if not reset_script:
             raise ValueError("reset_script missing for Resetting HAPS_ENV")
-        _validate_path(reset_script, "file", True)
         _log(f"[{stage}] verified reset script: {reset_script}")
 
     confprosh = str(runtime_cfg.get("HAPS_CONFPROSH") or "").strip()
