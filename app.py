@@ -1759,7 +1759,16 @@ def get_frontend_runtime_config() -> dict[str, Any]:
             cfg[key] = _parse_cfg_list(value)
         else:
             cfg[key] = value
-    return {"config": cfg, "frontend_stage_timeout_seconds": FRONTEND_STAGE_TIMEOUT_SECONDS}
+
+    frontend_defaults = {
+        "reset_script": str(cfg.get("HAPS_RESET_TCL") or "").strip(),
+        "imgload_script": str(cfg.get("HAPS_IMG_LOADING_TCL") or "").strip(),
+    }
+    return {
+        "config": cfg,
+        "frontend_defaults": frontend_defaults,
+        "frontend_stage_timeout_seconds": FRONTEND_STAGE_TIMEOUT_SECONDS,
+    }
 
 
 
