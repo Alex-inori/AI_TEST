@@ -1469,8 +1469,8 @@ def _validate_img_file(path_text: str, *, field_name: str) -> Path:
         raise ValueError(f"{field_name} not found: {path}")
     if not path.is_file():
         raise ValueError(f"{field_name} must be a file: {path}")
-    if path.suffix.lower() not in {".img", ".bin"}:
-        raise ValueError(f"{field_name} must be a .img or .bin file: {path}")
+    if path.suffix.lower() not in {".img", ".bin", ".dat"}:
+        raise ValueError(f"{field_name} must be a .img, .bin, or .dat file: {path}")
     return path
 
 

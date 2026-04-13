@@ -836,7 +836,7 @@ async function validateJobsBeforeSubmit(jobs) {
   const duplicateUarts = new Set();
   const usedUarts = new Set();
   const tclRegex = /\.tcl$/i;
-  const imgRegex = /\.(img|bin)$/i;
+  const imgRegex = /\.(img|bin|dat)$/i;
   const defaultLogRoot = String(runtimeConfig.UART_LOG_PATH || '').trim();
 
   for (const job of jobs) {
@@ -857,7 +857,7 @@ async function validateJobsBeforeSubmit(jobs) {
       if (!job.database_path_enabled) throw new Error(`Job ${job.jobs_id || '-'}: ImgLoad Script Path requires DataBase Path enabled.`);
       if (!job.reset_script_enabled) throw new Error(`Job ${job.jobs_id || '-'}: ImgLoad Script Path requires Reset Script Path enabled.`);
       if (!job.img_file) throw new Error(`Job ${job.jobs_id || '-'}: ImgLoad Script Path is enabled but IMG File path is empty.`);
-      if (!imgRegex.test(job.img_file)) throw new Error(`Job ${job.jobs_id || '-'}: IMG File path must be a .img or .bin file.`);
+      if (!imgRegex.test(job.img_file)) throw new Error(`Job ${job.jobs_id || '-'}: IMG File path must be a .img, .bin, or .dat file.`);
       if (job.imgload_script) {
         await callExtension('validatePath', { path: job.imgload_script, type: 'file', mustExist: true });
       }
