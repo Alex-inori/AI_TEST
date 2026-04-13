@@ -745,6 +745,8 @@ class JobManager:
 
     @staticmethod
     def _write_process_log(log_file: Any, message: str) -> None:
+        if "[HAPS_LOCK]" in str(message):
+            append_backend_debug_log(str(message))
         if log_file is None:
             return
         try:
