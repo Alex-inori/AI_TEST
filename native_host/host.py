@@ -9,8 +9,27 @@ import stat
 import subprocess
 import sys
 import time
+import zlib
 from pathlib import Path
 from typing import Any
+
+_IMG_DEDUP_SIGNATURES: set[str] = set()
+
+
+def _calculate_img_dedup_signature(file_path: str) -> tuple[str, str]:
+    sample_bytes = 4 * 1024 * 1024
+    file_size = os.path.getsize(file_path)
+    with open(file_path, "rb") as handle:
+        head = handle.read(sample_bytes)
+        tail = b""
+        if file_size > sample_bytes:
+            handle.seek(max(0, file_size - sample_bytes))
+            tail = handle.read(sample_bytes)
+    head_crc = zlib.crc32(head) & 0xFFFFFFFF
+    tail_crc = zlib.crc32(tail) & 0xFFFFFFFF
+    algo = "size+crc32(head4MB,tail4MB)"
+    signature = f"{file_size:016x}-{head_crc:08x}-{tail_crc:08x}"
+    return algo, signature
 
 
 def _read_message() -> dict[str, Any] | None:
@@ -145,6 +164,15 @@ def _run_stage(stage: str, payload: dict[str, Any]) -> dict[str, Any]:
             img_file = str((job_payload.get("img_file") if isinstance(job_payload, dict) else "") or "").strip()
             if not imgload_script:
                 raise ValueError("imgload_script missing for Loading SW_IMG")
+            try:
+                algo, signature = _calculate_img_dedup_signature(img_file)
+                duplicate = signature in _IMG_DEDUP_SIGNATURES
+                if not duplicate:
+                    _IMG_DEDUP_SIGNATURES.add(signature)
+                dedup_text = "file is remain unchanged" if duplicate else "file is new"
+                _log(f"[HAPS_LOCK] SW_IMG_CHECK algo={algo} signature={signature} {dedup_text}: {img_file}")
+            except Exception as exc:
+                _log(f"[HAPS_LOCK] SW_IMG_CHECK failed: {exc}")
             stage_cmd = [*confprosh_cmd, imgload_script, img_file]
         elif stage == "Running::Resetting HAPS_ENV":
             reset_script = str((job_payload.get("reset_script") if isinstance(job_payload, dict) else "") or "").strip()

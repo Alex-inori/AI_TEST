@@ -147,19 +147,6 @@ def append_backend_debug_log(message: str) -> None:
         return
 
 
-def append_haps_loading_log(log_path: str, message: str) -> None:
-    path_text = str(log_path or "").strip()
-    if not path_text:
-        return
-    try:
-        log_file = Path(path_text).expanduser() / "haps_loading.log"
-        log_file.parent.mkdir(parents=True, exist_ok=True)
-        with log_file.open("a", encoding="utf-8") as handle:
-            handle.write(f"{message}\n")
-    except Exception:
-        return
-
-
 def build_frontend_stage_sequence(payload: dict[str, Any]) -> list[str]:
     stages: list[str] = []
     if bool(payload.get("database_path_enabled", False)):
@@ -965,16 +952,8 @@ class JobManager:
                             log_file,
                             f"[HAPS_LOCK] SW_IMG_CHECK algo={dedup_result['algo']} signature={signature} {dedup_text}: {img_file}",
                         )
-                        append_haps_loading_log(
-                            str(payload.get("log_path") or ""),
-                            f"[HAPS_LOCK] SW_IMG_CHECK algo={dedup_result['algo']} signature={signature} {dedup_text}: {img_file}",
-                        )
                     elif "value" in dedup_error:
                         self._write_process_log(log_file, f"[HAPS_LOCK] SW_IMG_CHECK failed: {dedup_error['value']}")
-                        append_haps_loading_log(
-                            str(payload.get("log_path") or ""),
-                            f"[HAPS_LOCK] SW_IMG_CHECK failed: {dedup_error['value']}",
-                        )
                     if rc_img != 0:
                         self._write_process_log(log_file, f"[HAPS_LOCK] SW_IMG load failed, exit={rc_img}")
                         with self._lock:
