@@ -21,6 +21,8 @@ let uartDevices = [];
 let servicePort = 8000;
 let createJobsMaxNum = 5;
 let runtimeConfig = {};
+let defaultResetScript = '';
+let defaultImgloadScript = '';
 const FRONTEND_STAGE_TIMEOUT_MS = 5 * 60 * 1000;
 const EXT_SOURCE_WEB = 'cfgshell-web';
 const EXT_SOURCE_BRIDGE = 'cfgshell-extension';
@@ -742,8 +744,8 @@ function createNewJobCard(prefill = {}, insertAfterNode = null, options = {}) {
   node.querySelector('input[name="jobs_id"]').value = options.regenerateJobsId ? makeJobsId() : (prefill.jobs_id || makeJobsId());
   applyPlatformOptions(node.querySelector('select[name="haps_platform"]'), prefill.haps_platform || '');
   node.querySelector('input[name="database_path"]').value = prefill.database_path || '';
-  node.querySelector('input[name="reset_script"]').value = prefill.reset_script || '';
-  node.querySelector('input[name="imgload_script"]').value = prefill.imgload_script || '';
+  node.querySelector('input[name="reset_script"]').value = prefill.reset_script || defaultResetScript || '';
+  node.querySelector('input[name="imgload_script"]').value = prefill.imgload_script || defaultImgloadScript || '';
   node.querySelector('input[name="binfile"]').value = prefill.binfile || '';
   node.querySelector('input[name="img_file"]').value = prefill.img_file || '';
   const openocdCfg = prefill.openocd_cfg || {};
@@ -795,14 +797,16 @@ function collectNewJobs() {
     const dbPathEnabled = card.querySelector('.db-config-toggle[data-target="database_path"]').checked;
     const resetScriptEnabled = card.querySelector('.db-config-toggle[data-target="reset_script"]').checked;
     const imgLoadScriptEnabled = card.querySelector('.db-config-toggle[data-target="imgload_script"]').checked;
+    const resetScriptValue = card.querySelector('input[name="reset_script"]').value.trim() || defaultResetScript || '';
+    const imgloadScriptValue = card.querySelector('input[name="imgload_script"]').value.trim() || defaultImgloadScript || '';
     return {
       jobs_id: card.querySelector('input[name="jobs_id"]').value.trim(),
       haps_platform: card.querySelector('select[name="haps_platform"]').value,
       database_path: dbPathEnabled ? card.querySelector('input[name="database_path"]').value.trim() : '',
       database_path_enabled: dbPathEnabled,
-      reset_script: resetScriptEnabled ? card.querySelector('input[name="reset_script"]').value.trim() : '',
+      reset_script: resetScriptEnabled ? resetScriptValue : '',
       reset_script_enabled: resetScriptEnabled,
-      imgload_script: imgLoadScriptEnabled ? card.querySelector('input[name="imgload_script"]').value.trim() : '',
+      imgload_script: imgLoadScriptEnabled ? imgloadScriptValue : '',
       imgload_script_enabled: imgLoadScriptEnabled,
       binfile: card.querySelector('input[name="binfile"]').value.trim(),
       img_file: card.querySelector('input[name="img_file"]').value.trim(),
@@ -1228,6 +1232,9 @@ async function bootstrap() {
     if (runtimeResp.ok) {
       const runtimePayload = await runtimeResp.json();
       runtimeConfig = runtimePayload.config || {};
+      const frontendDefaults = runtimePayload.frontend_defaults || {};
+      defaultResetScript = String(frontendDefaults.reset_script || runtimeConfig.HAPS_RESET_TCL || '').trim();
+      defaultImgloadScript = String(frontendDefaults.imgload_script || runtimeConfig.HAPS_IMG_LOADING_TCL || '').trim();
     }
   } catch (_) {}
   try {
@@ -1249,6 +1256,8 @@ async function bootstrap() {
     uartDevices = Array.isArray(platformData.uart_devices)
       ? platformData.uart_devices.map((item) => String(item || '').trim()).filter(Boolean)
       : [];
+    defaultResetScript = String(platformData.default_reset_script || defaultResetScript || '').trim();
+    defaultImgloadScript = String(platformData.default_imgload_script || defaultImgloadScript || '').trim();
   } catch (error) {
     alert(`Failed to load HAPS platform config: ${error instanceof Error ? error.message : String(error)}`);
     return;
