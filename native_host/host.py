@@ -92,7 +92,7 @@ def _run_stage(stage: str, payload: dict[str, Any]) -> dict[str, Any]:
     nested_payload = payload.get("payload")
     job_payload = nested_payload if isinstance(nested_payload, dict) else payload
     log_path = str((job_payload.get("log_path") if isinstance(job_payload, dict) else "") or "").strip()
-    log_file = Path(log_path).expanduser() / "frontend-stage.log" if log_path else None
+    log_file = Path(log_path).expanduser() / "haps_loading.log" if log_path else None
 
     def _log(line: str) -> None:
         if not log_file:

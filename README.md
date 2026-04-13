@@ -114,7 +114,7 @@ pip install fastapi uvicorn pyserial
 
 ### Q4: Frontend stage 提交后直接 Failed
 
-后端会将阶段调度与失败原因写入：`/tmp/haps_backend_log.log`，可先查看该文件定位具体失败阶段与错误详情。
+后端会将阶段调度与失败原因写入：`<项目根目录>/haps_backend_log.log`，可先查看该文件定位具体失败阶段与错误详情。
 
 ---
 

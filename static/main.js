@@ -865,10 +865,6 @@ async function validateJobsBeforeSubmit(jobs) {
     const logPath = `${logBase}/${safeJobsId}`;
     job.log_path = logPath;
     await callExtension('ensureDirectory', { path: logPath, mode: '0777' });
-    await callExtension('appendFile', {
-      path: `${logPath}/frontend.log`,
-      content: `[${new Date().toISOString()}] job validated in frontend\n`,
-    });
     job.frontend_validated = true;
   }
 

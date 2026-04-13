@@ -35,7 +35,7 @@ from pydantic import BaseModel, Field
 APP_ROOT = Path(__file__).resolve().parent
 CFGSHELL_CONFIG_FILE = APP_ROOT / "cfgshell.conf"
 UTILIZATION_LOG_FILE = APP_ROOT / "ultization.log"
-BACKEND_DEBUG_LOG_FILE = Path("/tmp/haps_backend_log.log")
+BACKEND_DEBUG_LOG_FILE = APP_ROOT / "haps_backend_log.log"
 DEFAULT_SERVICE_PORT = 8000
 DEFAULT_CREATE_JOBS_MAX_NUM = 5
 DEFAULT_RECENT_JOBS_MAX_NUM = 10
@@ -143,6 +143,19 @@ def append_backend_debug_log(message: str) -> None:
     try:
         with BACKEND_DEBUG_LOG_FILE.open("a", encoding="utf-8") as handle:
             handle.write(f"[{timestamp}] {message}\n")
+    except Exception:
+        return
+
+
+def append_haps_loading_log(log_path: str, message: str) -> None:
+    path_text = str(log_path or "").strip()
+    if not path_text:
+        return
+    try:
+        log_file = Path(path_text).expanduser() / "haps_loading.log"
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        with log_file.open("a", encoding="utf-8") as handle:
+            handle.write(f"{message}\n")
     except Exception:
         return
 
@@ -952,8 +965,16 @@ class JobManager:
                             log_file,
                             f"[HAPS_LOCK] SW_IMG_CHECK algo={dedup_result['algo']} signature={signature} {dedup_text}: {img_file}",
                         )
+                        append_haps_loading_log(
+                            str(payload.get("log_path") or ""),
+                            f"[HAPS_LOCK] SW_IMG_CHECK algo={dedup_result['algo']} signature={signature} {dedup_text}: {img_file}",
+                        )
                     elif "value" in dedup_error:
                         self._write_process_log(log_file, f"[HAPS_LOCK] SW_IMG_CHECK failed: {dedup_error['value']}")
+                        append_haps_loading_log(
+                            str(payload.get("log_path") or ""),
+                            f"[HAPS_LOCK] SW_IMG_CHECK failed: {dedup_error['value']}",
+                        )
                     if rc_img != 0:
                         self._write_process_log(log_file, f"[HAPS_LOCK] SW_IMG load failed, exit={rc_img}")
                         with self._lock:
