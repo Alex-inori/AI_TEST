@@ -720,7 +720,7 @@ class JobManager:
         match = re.search(r"\b(cfg\d+)\b", str(cfg_open_output or ""))
         return match.group(1) if match else None
 
-    def _acquire_device_lock(self, job_id: str, payload: dict[str, Any], cfgshell_cmd: list[str], log_file: Any) -> None:
+    def _acquire_device_lock(self, job_id: str, payload: dict[str, Any], cfgshell_cmd: list[str]) -> None:
         master_fd, slave_fd = pty.openpty()
         process = subprocess.Popen(
             cfgshell_cmd,
@@ -762,7 +762,7 @@ class JobManager:
                 pass
             raise
 
-    def _release_haps_lock_locked(self, job_id: str, log_file: Any = None) -> None:
+    def _release_haps_lock_locked(self, job_id: str) -> None:
         session = self._haps_lock_sessions.pop(job_id, None)
         if not session:
             return
@@ -802,18 +802,8 @@ class JobManager:
                 return
             payload = dict(job.payload or {})
 
-        log_file = None
         lock_acquired = False
         try:
-            log_path = str(payload.get("log_path") or "").strip()
-            if log_path:
-                log_dir = Path(log_path).expanduser()
-                log_dir.mkdir(parents=True, exist_ok=True)
-                jobs_id = str(payload.get("jobs_id") or job_id)
-                safe_jobs_id = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in jobs_id)
-                process_log_path = log_dir / f"{safe_jobs_id}.log"
-                log_file = process_log_path.open("a", encoding="utf-8")
-
             settings = self._read_haps_settings()
             cfgshell_cmd_for_lock = list(settings.get("HAPS_CONFPROSH_CMD") or [])
 
@@ -823,20 +813,20 @@ class JobManager:
                 self._jobs[job_id].status = "Running::HAPS_RDY"
                 self._jobs[job_id].message = "frontend stages completed, backend locking HAPS"
 
-            self._acquire_device_lock(job_id, payload, cfgshell_cmd_for_lock, log_file)
+            self._acquire_device_lock(job_id, payload, cfgshell_cmd_for_lock)
             lock_acquired = True
 
             with self._lock:
                 if not self._job_is_current_locked(job_id, run_token):
-                    self._release_haps_lock_locked(job_id, log_file=log_file)
+                    self._release_haps_lock_locked(job_id)
                     lock_acquired = False
                     return
                 job = self._jobs[job_id]
                 command = self._build_job_command(job.payload)
                 process = subprocess.Popen(
                     ["bash", "-lc", command],
-                    stdout=log_file if log_file is not None else subprocess.DEVNULL,
-                    stderr=log_file if log_file is not None else subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
                     text=True,
                 )
                 job.process = process
@@ -849,7 +839,7 @@ class JobManager:
             append_backend_debug_log(f"[HAPS_LOCK] lock/launch exception: {exc}")
             with self._lock:
                 if self._job_is_current_locked(job_id, run_token):
-                    self._release_haps_lock_locked(job_id, log_file=log_file)
+                    self._release_haps_lock_locked(job_id)
                     lock_acquired = False
                     self._jobs[job_id].status = "Failed"
                     self._jobs[job_id].end_time = datetime.now().isoformat(timespec="seconds")
@@ -860,13 +850,7 @@ class JobManager:
             if lock_acquired:
                 with self._lock:
                     if not self._job_is_current_locked(job_id, run_token):
-                        self._release_haps_lock_locked(job_id, log_file=log_file)
-            if log_file is not None:
-                try:
-                    log_file.flush()
-                    log_file.close()
-                except Exception:
-                    pass
+                        self._release_haps_lock_locked(job_id)
 
 
     @staticmethod
