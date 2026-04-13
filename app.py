@@ -1446,13 +1446,25 @@ class JobManager:
             # over waiting queue promotion while old process exits.
             job.run_token += 1
             job.process = None
-            job.status = "Running::Loading HAPS"
-            job.message = "job resubmitting from Running::Loading HAPS"
+            sequence = [str(item) for item in list((job.payload or {}).get("frontend_stage_sequence") or []) if str(item)]
+            use_frontend_resubmit = bool(sequence)
+            if use_frontend_resubmit:
+                next_status = sequence[0]
+                job.status = next_status
+                job.message = f"job resubmitting from {next_status}"
+            else:
+                job.status = "Running::Loading HAPS"
+                job.message = "job resubmitting from Running::Loading HAPS"
             job.stop_confirmed = False
             job.stop_confirm_time = None
             if isinstance(job.payload, dict):
                 job.payload["frontend_prepare_completed"] = False
-                job.payload["frontend_managed"] = False
+                if use_frontend_resubmit:
+                    job.payload["frontend_managed"] = True
+                    job.payload["frontend_stage_index"] = 0
+                    job.payload["frontend_stage_deadline"] = ""
+                else:
+                    job.payload["frontend_managed"] = False
 
         if process and process.poll() is None:
             process.terminate()
@@ -1469,14 +1481,27 @@ class JobManager:
             if not self._is_running_status(current.status):
                 raise ValueError("job is not running")
             current.end_time = None
-            current.status = "Running::Loading HAPS"
-            current.message = "job stopped and resubmitted from Running::Loading HAPS"
+            sequence = [str(item) for item in list((current.payload or {}).get("frontend_stage_sequence") or []) if str(item)]
+            use_frontend_resubmit = bool(sequence)
+            if use_frontend_resubmit:
+                next_status = sequence[0]
+                current.status = next_status
+                current.message = f"job stopped and resubmitted from {next_status}"
+            else:
+                current.status = "Running::Loading HAPS"
+                current.message = "job stopped and resubmitted from Running::Loading HAPS"
             current.stop_confirmed = False
             current.stop_confirm_time = None
             if isinstance(current.payload, dict):
                 current.payload["frontend_prepare_completed"] = False
-                current.payload["frontend_managed"] = False
-            self._launch_job_process_locked(current)
+                if use_frontend_resubmit:
+                    current.payload["frontend_managed"] = True
+                    current.payload["frontend_stage_index"] = 0
+                    current.payload["frontend_stage_deadline"] = ""
+                else:
+                    current.payload["frontend_managed"] = False
+            if not use_frontend_resubmit:
+                self._launch_job_process_locked(current)
             return current
 
     def _finish_running_job_locked(self, job: JobRecord, message: str) -> None:
