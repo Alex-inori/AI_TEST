@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 _IMG_DEDUP_SIGNATURES: set[str] = set()
+BACKEND_DEBUG_LOG_FILE = Path(__file__).resolve().parent.parent / "haps_backend_log.log"
 
 
 def _calculate_img_dedup_signature(file_path: str) -> tuple[str, str]:
@@ -110,15 +111,14 @@ def _run_stage(stage: str, payload: dict[str, Any]) -> dict[str, Any]:
     runtime_cfg = payload.get("runtime_config") or {}
     nested_payload = payload.get("payload")
     job_payload = nested_payload if isinstance(nested_payload, dict) else payload
-    log_path = str((job_payload.get("log_path") if isinstance(job_payload, dict) else "") or "").strip()
-    log_file = Path(log_path).expanduser() / "haps_loading.log" if log_path else None
-
     def _log(line: str) -> None:
-        if not log_file:
+        timestamp = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
+        try:
+            BACKEND_DEBUG_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with BACKEND_DEBUG_LOG_FILE.open("a", encoding="utf-8") as f:
+                f.write(f"[{timestamp}] {line}\n")
+        except Exception:
             return
-        log_file.parent.mkdir(parents=True, exist_ok=True)
-        with log_file.open("a", encoding="utf-8") as f:
-            f.write(f"{line}\n")
 
     if stage == "Running::Loading HAPS_DB":
         db_path = str((job_payload.get("database_path") if isinstance(job_payload, dict) else "") or "").strip()
