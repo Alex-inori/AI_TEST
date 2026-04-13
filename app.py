@@ -13,7 +13,6 @@ import shlex
 import re
 import select
 import pty
-import zlib
 
 try:
     import fcntl
@@ -35,7 +34,7 @@ from pydantic import BaseModel, Field
 APP_ROOT = Path(__file__).resolve().parent
 CFGSHELL_CONFIG_FILE = APP_ROOT / "cfgshell.conf"
 UTILIZATION_LOG_FILE = APP_ROOT / "ultization.log"
-BACKEND_DEBUG_LOG_FILE = Path("/tmp/haps_backend_log.log")
+BACKEND_DEBUG_LOG_FILE = APP_ROOT / "haps_backend_log.log"
 DEFAULT_SERVICE_PORT = 8000
 DEFAULT_CREATE_JOBS_MAX_NUM = 5
 DEFAULT_RECENT_JOBS_MAX_NUM = 10
@@ -557,10 +556,6 @@ class UartStreamManager:
 class JobManager:
     STOP_CONFIRM_REMINDER_MINUTES = 5
     STOP_GRACE_MINUTES = 5
-    PREPARE_POLL_INTERVAL_SECONDS = 0.2
-    PREPARE_DB_TO_IMG_DELAY_SECONDS = 5
-    PREPARE_RESET_DELAY_AFTER_IMG_SECONDS = 5
-    PREPARE_RESET_DELAY_NO_IMG_SECONDS = 20
 
     def __init__(self, uart_stream: UartStreamManager) -> None:
         limits = load_ui_limits()
@@ -570,7 +565,6 @@ class JobManager:
         self._waiting_jobs: dict[str, WaitingJobRecord] = {}
         self._waiting_order: list[str] = []
         self._haps_lock_sessions: dict[str, HapsLockSession] = {}
-        self._img_dedup_signatures: set[str] = set()
         self._lock = threading.Lock()
         self._uart_stream = uart_stream
 
@@ -643,23 +637,6 @@ class JobManager:
             raise ValueError("HAPS_CONFPROSH is empty")
         settings["HAPS_CONFPROSH_CMD"] = shell_cmd
         return settings
-
-    @staticmethod
-    def _should_run_prepare(payload: dict[str, Any]) -> bool:
-        if bool(payload.get("frontend_prepare_completed", False)):
-            return False
-        db_enabled = bool(payload.get("database_path_enabled", False))
-        reset_enabled = bool(payload.get("reset_script_enabled", False))
-        database_path = str(payload.get("database_path") or "").strip()
-        reset_script = str(payload.get("reset_script") or "").strip()
-        return bool(db_enabled and reset_enabled and database_path and reset_script)
-
-    @staticmethod
-    def _should_run_imgload(payload: dict[str, Any]) -> bool:
-        imgload_enabled = bool(payload.get("imgload_script_enabled", False))
-        imgload_script = str(payload.get("imgload_script") or "").strip()
-        img_file = str(payload.get("img_file") or "").strip()
-        return bool(imgload_enabled and imgload_script and img_file)
 
     @staticmethod
     def _extract_platform_family(payload: dict[str, Any]) -> str:
@@ -743,38 +720,7 @@ class JobManager:
         match = re.search(r"\b(cfg\d+)\b", str(cfg_open_output or ""))
         return match.group(1) if match else None
 
-    @staticmethod
-    def _write_process_log(log_file: Any, message: str) -> None:
-        if log_file is None:
-            return
-        try:
-            log_file.write(f"{message}\n")
-            log_file.flush()
-        except Exception:
-            return
-
-    @staticmethod
-    def _log_stage_timestamp(log_file: Any, stage: str, event: str) -> None:
-        timestamp = datetime.now().isoformat(timespec="seconds")
-        JobManager._write_process_log(log_file, f"[HAPS_STAGE] stage={stage} event={event} ts={timestamp}")
-
-    @staticmethod
-    def _calculate_img_dedup_signature(file_path: str) -> tuple[str, str]:
-        sample_bytes = 4 * 1024 * 1024
-        file_size = os.path.getsize(file_path)
-        with open(file_path, "rb") as handle:
-            head = handle.read(sample_bytes)
-            tail = b""
-            if file_size > sample_bytes:
-                handle.seek(max(0, file_size - sample_bytes))
-                tail = handle.read(sample_bytes)
-        head_crc = zlib.crc32(head) & 0xFFFFFFFF
-        tail_crc = zlib.crc32(tail) & 0xFFFFFFFF
-        algo = "size+crc32(head4MB,tail4MB)"
-        signature = f"{file_size:016x}-{head_crc:08x}-{tail_crc:08x}"
-        return algo, signature
-
-    def _acquire_device_lock(self, job_id: str, payload: dict[str, Any], cfgshell_cmd: list[str], log_file: Any) -> None:
+    def _acquire_device_lock(self, job_id: str, payload: dict[str, Any], cfgshell_cmd: list[str]) -> None:
         master_fd, slave_fd = pty.openpty()
         process = subprocess.Popen(
             cfgshell_cmd,
@@ -794,8 +740,10 @@ class JobManager:
             if not handle:
                 raise RuntimeError(f"cfg_open failed, output={open_output!r}")
             lock_scan_output = self._cfgshell_eval(process, master_fd, "cfg_scan")
-            self._write_process_log(log_file, f"[HAPS_LOCK] job={job_id} platform={payload.get('haps_platform')} device={device_id} handle={handle}")
-            self._write_process_log(log_file, f"[HAPS_LOCK] cfg_scan(after open): {lock_scan_output}")
+            append_backend_debug_log(
+                f"[HAPS_LOCK] job={job_id} platform={payload.get('haps_platform')} device={device_id} handle={handle}"
+            )
+            append_backend_debug_log(f"[HAPS_LOCK] cfg_scan(after open): {lock_scan_output}")
             with self._lock:
                 self._haps_lock_sessions[job_id] = HapsLockSession(process=process, device_id=device_id, handle=handle, io_fd=master_fd)
         except Exception:
@@ -814,15 +762,15 @@ class JobManager:
                 pass
             raise
 
-    def _release_haps_lock_locked(self, job_id: str, log_file: Any = None) -> None:
+    def _release_haps_lock_locked(self, job_id: str) -> None:
         session = self._haps_lock_sessions.pop(job_id, None)
         if not session:
             return
         try:
             self._cfgshell_eval(session.process, session.io_fd, f"cfg_close {session.handle}", timeout_seconds=10)
-            self._write_process_log(log_file, f"[HAPS_LOCK] released job={job_id} handle={session.handle}")
+            append_backend_debug_log(f"[HAPS_LOCK] released job={job_id} handle={session.handle}")
         except Exception as exc:
-            self._write_process_log(log_file, f"[HAPS_LOCK] release failed job={job_id}: {exc}")
+            append_backend_debug_log(f"[HAPS_LOCK] release failed job={job_id}: {exc}")
         finally:
             try:
                 os.close(session.io_fd)
@@ -842,205 +790,10 @@ class JobManager:
         job = self._jobs.get(job_id)
         return bool(job and job.run_token == run_token and self._is_running_status(job.status))
 
-    def _wait_prepare_delay(self, job_id: str, run_token: int, delay_seconds: int) -> bool:
-        deadline = time.monotonic() + max(0, delay_seconds)
-        while time.monotonic() < deadline:
-            with self._lock:
-                if not self._job_is_current_locked(job_id, run_token):
-                    return False
-            time.sleep(self.PREPARE_POLL_INTERVAL_SECONDS)
-        return True
-
-    def _prepare_reset_delay_seconds(self, ran_imgload: bool) -> int:
-        if ran_imgload:
-            return self.PREPARE_RESET_DELAY_AFTER_IMG_SECONDS
-        return self.PREPARE_RESET_DELAY_NO_IMG_SECONDS
-
     def _prepare_and_launch_job(self, job_id: str, run_token: int) -> None:
-        with self._lock:
-            job = self._jobs.get(job_id)
-            if not job or job.run_token != run_token:
-                return
-            payload = dict(job.payload or {})
-
-        log_file = None
-        lock_acquired = False
-        try:
-            log_path = str(payload.get("log_path") or "").strip()
-            lock_settings: dict[str, Any] | None = None
-            lock_cfgshell_cmd: list[str] | None = None
-            if log_path:
-                log_dir = Path(log_path).expanduser()
-                log_dir.mkdir(parents=True, exist_ok=True)
-                jobs_id = str(payload.get("jobs_id") or job_id)
-                safe_jobs_id = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in jobs_id)
-                process_log_path = log_dir / f"{safe_jobs_id}.log"
-                log_file = process_log_path.open("a", encoding="utf-8")
-
-            lock_settings = self._read_haps_settings()
-            lock_cfgshell_cmd = list(lock_settings.get("HAPS_CONFPROSH_CMD") or [])
-
-            if self._should_run_prepare(payload):
-                settings = lock_settings or self._read_haps_settings()
-                cfgshell_cmd = lock_cfgshell_cmd or list(settings.get("HAPS_CONFPROSH_CMD") or [])
-                db_load_script = str(settings.get("HAPS_DB_LOADING_TCL") or "").strip()
-                database_path = str(payload.get("database_path") or "").strip()
-                reset_script = str(payload.get("reset_script") or "").strip()
-                haps_platform = str(payload.get("haps_platform") or "").strip()
-                hmf_txt = str(payload.get("haps_hmf_txt") or "").strip()
-                ran_imgload = False
-
-                with self._lock:
-                    if not self._job_is_current_locked(job_id, run_token):
-                        return
-                    self._jobs[job_id].status = "Running::Loading HAPS_DB"
-
-                db_load_cmd = [*cfgshell_cmd, db_load_script, database_path]
-                if "HAPS100" in haps_platform:
-                    db_load_cmd.append(hmf_txt)
-                self._log_stage_timestamp(log_file, "load_db", "start")
-                rc1 = subprocess.run(db_load_cmd, stdout=log_file, stderr=log_file, text=True).returncode
-                self._log_stage_timestamp(log_file, "load_db", "end")
-                if rc1 != 0:
-                    self._write_process_log(log_file, f"[HAPS_LOCK] HAPS_DB load failed, exit={rc1}")
-                    with self._lock:
-                        if self._job_is_current_locked(job_id, run_token):
-                            self._jobs[job_id].status = "Failed"
-                            self._jobs[job_id].end_time = datetime.now().isoformat(timespec="seconds")
-                            self._jobs[job_id].message = f"HAPS_DB load failed (exit={rc1})"
-                            self._append_utilization_log(self._jobs[job_id])
-                            self._promote_waiting_locked()
-                    return
-
-                if self._should_run_imgload(payload):
-                    imgload_script = str(payload.get("imgload_script") or "").strip()
-                    img_file = str(payload.get("img_file") or "").strip()
-                    jobs_id = str(payload.get("jobs_id") or job_id)
-                    duration_minutes = self._duration_minutes(payload)
-                    if not self._wait_prepare_delay(job_id, run_token, self.PREPARE_DB_TO_IMG_DELAY_SECONDS):
-                        return
-                    with self._lock:
-                        if not self._job_is_current_locked(job_id, run_token):
-                            return
-                        self._jobs[job_id].status = "Running::Loading SW_IMG"
-
-                    dedup_result: dict[str, str] = {}
-                    dedup_error: dict[str, str] = {}
-
-                    def _collect_img_signature() -> None:
-                        try:
-                            algo, signature = self._calculate_img_dedup_signature(img_file)
-                            dedup_result["algo"] = algo
-                            dedup_result["signature"] = signature
-                        except Exception as exc:
-                            dedup_error["value"] = str(exc)
-
-                    dedup_thread = threading.Thread(target=_collect_img_signature, daemon=True)
-                    dedup_thread.start()
-                    self._log_stage_timestamp(log_file, "load_img", "start")
-                    rc_img = subprocess.run([*cfgshell_cmd, imgload_script, img_file], stdout=log_file, stderr=log_file, text=True).returncode
-                    self._log_stage_timestamp(log_file, "load_img", "end")
-                    dedup_thread.join()
-                    if "signature" in dedup_result:
-                        signature = dedup_result["signature"]
-                        with self._lock:
-                            duplicate = signature in self._img_dedup_signatures
-                            if not duplicate:
-                                self._img_dedup_signatures.add(signature)
-                        dedup_text = "file is remain unchanged" if duplicate else "file is new"
-                        self._write_process_log(
-                            log_file,
-                            f"[HAPS_LOCK] SW_IMG_CHECK algo={dedup_result['algo']} signature={signature} {dedup_text}: {img_file}",
-                        )
-                    elif "value" in dedup_error:
-                        self._write_process_log(log_file, f"[HAPS_LOCK] SW_IMG_CHECK failed: {dedup_error['value']}")
-                    if rc_img != 0:
-                        self._write_process_log(log_file, f"[HAPS_LOCK] SW_IMG load failed, exit={rc_img}")
-                        with self._lock:
-                            if self._job_is_current_locked(job_id, run_token):
-                                self._jobs[job_id].status = "Failed"
-                                self._jobs[job_id].end_time = datetime.now().isoformat(timespec="seconds")
-                                self._jobs[job_id].message = f"SW_IMG load failed (exit={rc_img})"
-                                self._append_utilization_log(self._jobs[job_id])
-                                self._promote_waiting_locked()
-                        return
-                    ran_imgload = True
-
-                with self._lock:
-                    if not self._job_is_current_locked(job_id, run_token):
-                        return
-                    self._jobs[job_id].status = "Running::Resetting HAPS_ENV"
-
-                prepare_delay = self._prepare_reset_delay_seconds(ran_imgload)
-                if not self._wait_prepare_delay(job_id, run_token, prepare_delay):
-                    return
-
-                self._log_stage_timestamp(log_file, "reset", "start")
-                rc2 = subprocess.run([*cfgshell_cmd, reset_script], stdout=log_file, stderr=log_file, text=True).returncode
-                self._log_stage_timestamp(log_file, "reset", "end")
-                if rc2 != 0:
-                    self._write_process_log(log_file, f"[HAPS_LOCK] HAPS_ENV reset failed, exit={rc2}")
-                    with self._lock:
-                        if self._job_is_current_locked(job_id, run_token):
-                            self._jobs[job_id].status = "Failed"
-                            self._jobs[job_id].end_time = datetime.now().isoformat(timespec="seconds")
-                            self._jobs[job_id].message = f"HAPS_ENV reset failed (exit={rc2})"
-                            self._append_utilization_log(self._jobs[job_id])
-                            self._promote_waiting_locked()
-                    return
-
-            with self._lock:
-                if not self._job_is_current_locked(job_id, run_token):
-                    return
-                job = self._jobs[job_id]
-                job.status = "Running::HAPS_RDY"
-
-            # cfgshell 不支持并行启动：先完成 prepare，再在 HAPS_RDY 阶段进行设备 lock。
-            cfgshell_cmd_for_lock = lock_cfgshell_cmd or []
-            self._acquire_device_lock(job_id, payload, cfgshell_cmd_for_lock, log_file)
-            lock_acquired = True
-
-            with self._lock:
-                if not self._job_is_current_locked(job_id, run_token):
-                    self._release_haps_lock_locked(job_id, log_file=log_file)
-                    lock_acquired = False
-                    return
-                job = self._jobs[job_id]
-                command = self._build_job_command(job.payload)
-                process = subprocess.Popen(
-                    ["bash", "-lc", command],
-                    stdout=log_file if log_file is not None else subprocess.DEVNULL,
-                    stderr=log_file if log_file is not None else subprocess.DEVNULL,
-                    text=True,
-                )
-                job.process = process
-                uart_paths = list((job.payload or {}).get("uart_paths") or [])
-                jobs_id = str((job.payload or {}).get("jobs_id") or job.id)
-                log_path = str((job.payload or {}).get("log_path") or "")
-                self._uart_stream.start_capture(job.id, jobs_id, uart_paths, log_path)
-                threading.Thread(target=self._watch_job, args=(job.id, job.run_token), daemon=True).start()
-        except Exception as exc:
-            self._write_process_log(log_file, f"[HAPS_LOCK] prepare exception: {exc}")
-            with self._lock:
-                if self._job_is_current_locked(job_id, run_token):
-                    self._release_haps_lock_locked(job_id, log_file=log_file)
-                    lock_acquired = False
-                    self._jobs[job_id].status = "Failed"
-                    self._jobs[job_id].end_time = datetime.now().isoformat(timespec="seconds")
-                    self._jobs[job_id].message = f"db/reset prepare failed: {exc}"
-                    self._append_utilization_log(self._jobs[job_id])
-                    self._promote_waiting_locked()
-        finally:
-            if lock_acquired:
-                with self._lock:
-                    if not self._job_is_current_locked(job_id, run_token):
-                        self._release_haps_lock_locked(job_id, log_file=log_file)
-            if log_file is not None:
-                try:
-                    log_file.flush()
-                    log_file.close()
-                except Exception:
-                    pass
+        # frontend_managed=False 的后端执行流程已不再包含 Loading HAPS_DB/SW_IMG/Reset 阶段，
+        # 后端仅负责 lock + launch。
+        self._lock_and_launch_job(job_id, run_token)
 
     def _lock_and_launch_job(self, job_id: str, run_token: int) -> None:
         with self._lock:
@@ -1049,18 +802,8 @@ class JobManager:
                 return
             payload = dict(job.payload or {})
 
-        log_file = None
         lock_acquired = False
         try:
-            log_path = str(payload.get("log_path") or "").strip()
-            if log_path:
-                log_dir = Path(log_path).expanduser()
-                log_dir.mkdir(parents=True, exist_ok=True)
-                jobs_id = str(payload.get("jobs_id") or job_id)
-                safe_jobs_id = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in jobs_id)
-                process_log_path = log_dir / f"{safe_jobs_id}.log"
-                log_file = process_log_path.open("a", encoding="utf-8")
-
             settings = self._read_haps_settings()
             cfgshell_cmd_for_lock = list(settings.get("HAPS_CONFPROSH_CMD") or [])
 
@@ -1070,20 +813,20 @@ class JobManager:
                 self._jobs[job_id].status = "Running::HAPS_RDY"
                 self._jobs[job_id].message = "frontend stages completed, backend locking HAPS"
 
-            self._acquire_device_lock(job_id, payload, cfgshell_cmd_for_lock, log_file)
+            self._acquire_device_lock(job_id, payload, cfgshell_cmd_for_lock)
             lock_acquired = True
 
             with self._lock:
                 if not self._job_is_current_locked(job_id, run_token):
-                    self._release_haps_lock_locked(job_id, log_file=log_file)
+                    self._release_haps_lock_locked(job_id)
                     lock_acquired = False
                     return
                 job = self._jobs[job_id]
                 command = self._build_job_command(job.payload)
                 process = subprocess.Popen(
                     ["bash", "-lc", command],
-                    stdout=log_file if log_file is not None else subprocess.DEVNULL,
-                    stderr=log_file if log_file is not None else subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
                     text=True,
                 )
                 job.process = process
@@ -1093,10 +836,10 @@ class JobManager:
                 self._uart_stream.start_capture(job.id, jobs_id, uart_paths, log_path)
                 threading.Thread(target=self._watch_job, args=(job.id, job.run_token), daemon=True).start()
         except Exception as exc:
-            self._write_process_log(log_file, f"[HAPS_LOCK] lock/launch exception: {exc}")
+            append_backend_debug_log(f"[HAPS_LOCK] lock/launch exception: {exc}")
             with self._lock:
                 if self._job_is_current_locked(job_id, run_token):
-                    self._release_haps_lock_locked(job_id, log_file=log_file)
+                    self._release_haps_lock_locked(job_id)
                     lock_acquired = False
                     self._jobs[job_id].status = "Failed"
                     self._jobs[job_id].end_time = datetime.now().isoformat(timespec="seconds")
@@ -1107,13 +850,7 @@ class JobManager:
             if lock_acquired:
                 with self._lock:
                     if not self._job_is_current_locked(job_id, run_token):
-                        self._release_haps_lock_locked(job_id, log_file=log_file)
-            if log_file is not None:
-                try:
-                    log_file.flush()
-                    log_file.close()
-                except Exception:
-                    pass
+                        self._release_haps_lock_locked(job_id)
 
 
     @staticmethod

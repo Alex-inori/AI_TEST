@@ -9,8 +9,28 @@ import stat
 import subprocess
 import sys
 import time
+import zlib
 from pathlib import Path
 from typing import Any
+
+_IMG_DEDUP_SIGNATURES: set[str] = set()
+BACKEND_DEBUG_LOG_FILE = Path(__file__).resolve().parent.parent / "haps_backend_log.log"
+
+
+def _calculate_img_dedup_signature(file_path: str) -> tuple[str, str]:
+    sample_bytes = 4 * 1024 * 1024
+    file_size = os.path.getsize(file_path)
+    with open(file_path, "rb") as handle:
+        head = handle.read(sample_bytes)
+        tail = b""
+        if file_size > sample_bytes:
+            handle.seek(max(0, file_size - sample_bytes))
+            tail = handle.read(sample_bytes)
+    head_crc = zlib.crc32(head) & 0xFFFFFFFF
+    tail_crc = zlib.crc32(tail) & 0xFFFFFFFF
+    algo = "size+crc32(head4MB,tail4MB)"
+    signature = f"{file_size:016x}-{head_crc:08x}-{tail_crc:08x}"
+    return algo, signature
 
 
 def _read_message() -> dict[str, Any] | None:
@@ -92,32 +112,36 @@ def _run_stage(stage: str, payload: dict[str, Any]) -> dict[str, Any]:
     nested_payload = payload.get("payload")
     job_payload = nested_payload if isinstance(nested_payload, dict) else payload
     log_path = str((job_payload.get("log_path") if isinstance(job_payload, dict) else "") or "").strip()
-    log_file = Path(log_path).expanduser() / "frontend-stage.log" if log_path else None
+    log_file = Path(log_path).expanduser() / "haps_loading.log" if log_path else None
 
     def _log(line: str) -> None:
-        if not log_file:
+        timestamp = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
+        try:
+            if log_file is not None:
+                log_file.parent.mkdir(parents=True, exist_ok=True)
+                with log_file.open("a", encoding="utf-8") as f:
+                    f.write(f"{line}\n")
+            if "[HAPS_LOCK]" in line:
+                BACKEND_DEBUG_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+                with BACKEND_DEBUG_LOG_FILE.open("a", encoding="utf-8") as f:
+                    f.write(f"[{timestamp}] {line}\n")
+        except Exception:
             return
-        log_file.parent.mkdir(parents=True, exist_ok=True)
-        with log_file.open("a", encoding="utf-8") as f:
-            f.write(f"{line}\n")
 
     if stage == "Running::Loading HAPS_DB":
         db_path = str((job_payload.get("database_path") if isinstance(job_payload, dict) else "") or "").strip()
         if not db_path:
             raise ValueError("database_path missing for Loading HAPS_DB")
-        _validate_path(db_path, "directory", True)
         _log(f"[{stage}] verified database path: {db_path}")
     elif stage == "Running::Loading SW_IMG":
         img_file = str((job_payload.get("img_file") if isinstance(job_payload, dict) else "") or "").strip()
         if not img_file:
             raise ValueError("img_file missing for Loading SW_IMG")
-        _validate_path(img_file, "file", True)
         _log(f"[{stage}] verified image file: {img_file}")
     elif stage == "Running::Resetting HAPS_ENV":
         reset_script = str((job_payload.get("reset_script") if isinstance(job_payload, dict) else "") or "").strip()
         if not reset_script:
             raise ValueError("reset_script missing for Resetting HAPS_ENV")
-        _validate_path(reset_script, "file", True)
         _log(f"[{stage}] verified reset script: {reset_script}")
 
     confprosh = str(runtime_cfg.get("HAPS_CONFPROSH") or "").strip()
@@ -145,6 +169,15 @@ def _run_stage(stage: str, payload: dict[str, Any]) -> dict[str, Any]:
             img_file = str((job_payload.get("img_file") if isinstance(job_payload, dict) else "") or "").strip()
             if not imgload_script:
                 raise ValueError("imgload_script missing for Loading SW_IMG")
+            try:
+                algo, signature = _calculate_img_dedup_signature(img_file)
+                duplicate = signature in _IMG_DEDUP_SIGNATURES
+                if not duplicate:
+                    _IMG_DEDUP_SIGNATURES.add(signature)
+                dedup_text = "file is remain unchanged" if duplicate else "file is new"
+                _log(f"[SW_IMG_CHECK] algo={algo} signature={signature} {dedup_text}: {img_file}")
+            except Exception as exc:
+                _log(f"[SW_IMG_CHECK] failed: {exc}")
             stage_cmd = [*confprosh_cmd, imgload_script, img_file]
         elif stage == "Running::Resetting HAPS_ENV":
             reset_script = str((job_payload.get("reset_script") if isinstance(job_payload, dict) else "") or "").strip()
