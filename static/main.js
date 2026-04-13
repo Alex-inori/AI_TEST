@@ -591,15 +591,29 @@ function findParentPath(pathValue) {
   if (slashIndex <= 0) return '/';
   return clean.slice(0, slashIndex);
 }
+function isPermissionDeniedError(error) {
+  const text = String((error && error.message) || error || '').toLowerCase();
+  return text.includes('permission denied') || text.includes('eacces') || text.includes('operation not permitted');
+}
 async function loadFsEntriesWithFallback(path, mode) {
   const trimmed = (path || '').trim();
   try {
     return await loadFsEntries(trimmed, mode);
   } catch (error) {
+    if (isPermissionDeniedError(error)) {
+      return loadFsEntries('', mode);
+    }
     if (!trimmed) throw error;
     const fallbackPath = findParentPath(trimmed);
     if (!fallbackPath || fallbackPath === trimmed) throw error;
-    return loadFsEntries(fallbackPath, mode);
+    try {
+      return await loadFsEntries(fallbackPath, mode);
+    } catch (parentError) {
+      if (isPermissionDeniedError(parentError)) {
+        return loadFsEntries('', mode);
+      }
+      throw parentError;
+    }
   }
 }
 async function loadFsEntries(path, mode) {
