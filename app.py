@@ -1502,6 +1502,11 @@ def validate_submit_payload(
 
     reset_enabled = bool(payload.get("reset_script_enabled", False))
     imgload_enabled = bool(payload.get("imgload_script_enabled", False))
+    if reset_enabled and not str(payload.get("reset_script") or "").strip():
+        payload["reset_script"] = str(settings.get("HAPS_RESET_TCL") or "").strip()
+    if imgload_enabled and not str(payload.get("imgload_script") or "").strip():
+        payload["imgload_script"] = str(settings.get("HAPS_IMG_LOADING_TCL") or "").strip()
+
     if reset_enabled:
         _validate_tcl_file(str(payload.get("reset_script") or ""), field_name="reset_script")
     if imgload_enabled:
