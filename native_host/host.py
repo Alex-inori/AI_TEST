@@ -175,9 +175,9 @@ def _run_stage(stage: str, payload: dict[str, Any]) -> dict[str, Any]:
                 if not duplicate:
                     _IMG_DEDUP_SIGNATURES.add(signature)
                 dedup_text = "file is remain unchanged" if duplicate else "file is new"
-                _log(f"[HAPS_LOCK] SW_IMG_CHECK algo={algo} signature={signature} {dedup_text}: {img_file}")
+                _log(f"[SW_IMG_CHECK] algo={algo} signature={signature} {dedup_text}: {img_file}")
             except Exception as exc:
-                _log(f"[HAPS_LOCK] SW_IMG_CHECK failed: {exc}")
+                _log(f"[SW_IMG_CHECK] failed: {exc}")
             stage_cmd = [*confprosh_cmd, imgload_script, img_file]
         elif stage == "Running::Resetting HAPS_ENV":
             reset_script = str((job_payload.get("reset_script") if isinstance(job_payload, dict) else "") or "").strip()
