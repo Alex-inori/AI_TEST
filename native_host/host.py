@@ -13,7 +13,6 @@ import zlib
 from pathlib import Path
 from typing import Any
 
-_IMG_LAST_SIGNATURES_BY_JOB: dict[str, str] = {}
 BACKEND_DEBUG_LOG_FILE = Path(__file__).resolve().parent.parent / "haps_backend_log.log"
 
 
@@ -31,6 +30,22 @@ def _calculate_img_dedup_signature(file_path: str) -> tuple[str, str]:
     algo = "size+crc32(head4MB,tail4MB)"
     signature = f"{file_size:016x}-{head_crc:08x}-{tail_crc:08x}"
     return algo, signature
+
+
+def _read_previous_sw_img_signature(log_file: Path | None) -> str | None:
+    if log_file is None or not log_file.exists() or not log_file.is_file():
+        return None
+    pattern = re.compile(r"\[SW_IMG_CHECK\].*signature=([0-9a-fA-F-]+)")
+    last_signature: str | None = None
+    try:
+        with log_file.open("r", encoding="utf-8", errors="ignore") as handle:
+            for line in handle:
+                match = pattern.search(line)
+                if match:
+                    last_signature = match.group(1)
+    except OSError:
+        return None
+    return last_signature
 
 
 def _read_message() -> dict[str, Any] | None:
@@ -167,15 +182,12 @@ def _run_stage(stage: str, payload: dict[str, Any]) -> dict[str, Any]:
         elif stage == "Running::Loading SW_IMG":
             imgload_script = str((job_payload.get("imgload_script") if isinstance(job_payload, dict) else "") or "").strip()
             img_file = str((job_payload.get("img_file") if isinstance(job_payload, dict) else "") or "").strip()
-            jobs_id = str((job_payload.get("jobs_id") if isinstance(job_payload, dict) else "") or "").strip()
             if not imgload_script:
                 raise ValueError("imgload_script missing for Loading SW_IMG")
             try:
                 algo, signature = _calculate_img_dedup_signature(img_file)
-                dedup_key = jobs_id or "__global__"
-                previous_signature = _IMG_LAST_SIGNATURES_BY_JOB.get(dedup_key)
+                previous_signature = _read_previous_sw_img_signature(log_file)
                 unchanged = previous_signature is not None and previous_signature == signature
-                _IMG_LAST_SIGNATURES_BY_JOB[dedup_key] = signature
                 dedup_text = "file has no change" if unchanged else "file is new"
                 _log(f"[SW_IMG_CHECK] algo={algo} signature={signature} {dedup_text}: {img_file}")
             except Exception as exc:
