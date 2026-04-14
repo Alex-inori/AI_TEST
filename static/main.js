@@ -983,14 +983,8 @@ async function stopAndResubmitJob(jobId) {
   refreshWaitingJobs();
 }
 async function openRunningJobTerminal(jobId) {
-  const jobsResp = await fetch(buildApiUrl('/api/jobs'));
-  if (!jobsResp.ok) return alert(`Open Terminal failed: ${await jobsResp.text()}`);
-  const data = await jobsResp.json();
-  const jobs = Array.isArray(data.jobs) ? data.jobs : [];
-  const target = jobs.find((item) => String(item.id) === String(jobId));
-  if (!target) return alert('Open Terminal failed: job not found');
   const terminalPath = String(runtimeConfig.TERMINAL || '').trim();
-  const cwd = String((target.payload || {}).log_path || '').trim();
+  const cwd = '';
   if (!terminalPath) return alert('Open Terminal failed: TERMINAL is missing from backend runtime config.');
   try {
     await callExtension('openTerminal', { terminalPath, cwd, jobId: String(jobId) }, 20000);

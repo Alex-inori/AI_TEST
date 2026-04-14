@@ -13,7 +13,6 @@ import zlib
 from pathlib import Path
 from typing import Any
 
-_IMG_DEDUP_SIGNATURES: set[str] = set()
 BACKEND_DEBUG_LOG_FILE = Path(__file__).resolve().parent.parent / "haps_backend_log.log"
 
 
@@ -31,6 +30,22 @@ def _calculate_img_dedup_signature(file_path: str) -> tuple[str, str]:
     algo = "size+crc32(head4MB,tail4MB)"
     signature = f"{file_size:016x}-{head_crc:08x}-{tail_crc:08x}"
     return algo, signature
+
+
+def _read_previous_sw_img_signature(log_file: Path | None) -> str | None:
+    if log_file is None or not log_file.exists() or not log_file.is_file():
+        return None
+    pattern = re.compile(r"\[SW_IMG_CHECK\].*signature=([0-9a-fA-F-]+)")
+    last_signature: str | None = None
+    try:
+        with log_file.open("r", encoding="utf-8", errors="ignore") as handle:
+            for line in handle:
+                match = pattern.search(line)
+                if match:
+                    last_signature = match.group(1)
+    except OSError:
+        return None
+    return last_signature
 
 
 def _read_message() -> dict[str, Any] | None:
@@ -171,10 +186,9 @@ def _run_stage(stage: str, payload: dict[str, Any]) -> dict[str, Any]:
                 raise ValueError("imgload_script missing for Loading SW_IMG")
             try:
                 algo, signature = _calculate_img_dedup_signature(img_file)
-                duplicate = signature in _IMG_DEDUP_SIGNATURES
-                if not duplicate:
-                    _IMG_DEDUP_SIGNATURES.add(signature)
-                dedup_text = "file is remain unchanged" if duplicate else "file is new"
+                previous_signature = _read_previous_sw_img_signature(log_file)
+                unchanged = previous_signature is not None and previous_signature == signature
+                dedup_text = "file has no change" if unchanged else "file is new"
                 _log(f"[SW_IMG_CHECK] algo={algo} signature={signature} {dedup_text}: {img_file}")
             except Exception as exc:
                 _log(f"[SW_IMG_CHECK] failed: {exc}")
